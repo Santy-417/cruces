@@ -68,12 +68,12 @@ Conecta a Oracle, ejecuta `SELECT 1 FROM DUAL` y muestra el resultado. No ejecut
 ### Generar reporte
 
 ```bash
-python main.py
+python main.py --limit 1000
 ```
 
 El script:
 1. Conecta a Oracle
-2. Ejecuta el query de incidentes activos (máximo 10 filas)
+2. Ejecuta el query de incidentes activos (máximo 1000 incidentes — valor recomendado para uso diario)
 3. Consolida las filas: **1 fila por incidente** con columnas por tipo de infraestructura
 4. Genera un archivo Excel en `OUTPUT_DIR` con el nombre `crucesmacros_YYYYMMDD_HHMMSS.xlsx`
 

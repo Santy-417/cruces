@@ -33,6 +33,12 @@ EXPORTE_COLUMNS = [
     "ID_CDI",                 # AI
     "EQUIPO",                 # AJ
     "REFERENCIA",             # AK
+    "DESCRIPCION",            # AL
+    "TECNOLOGIA",             # AM
+    "ID_OLT",                 # AN
+    "ID_ARPON",               # AO
+    "ID_SPLITTER",            # AP
+    "ID_NAP",                 # AQ
 ]
 
 
@@ -99,7 +105,13 @@ def to_exporte_schema(df: pd.DataFrame) -> pd.DataFrame:
     out["TBD_AG"] = pd.NA
 
     out["ID_CDI"] = _coalesce(df, "ID_CDI")
-    out["EQUIPO"] = out["MAC_CPE"].combine_first(_get(df, "ID_CPE"))
+    out["EQUIPO"] = _coalesce(df, "ID_CPE", "MAC_MTA", "MAC_Equipo_CABLEM", "MAC_Equipo_CABLE MODEM").apply(_format_mac)
     out["REFERENCIA"] = pd.NA
+
+    out["DESCRIPCION"] = _get(df, "DESCRIPCIÓN")
+    out["TECNOLOGIA"]  = _get(df, "TECNOLOGÍA")
+
+    for col in ["ID_OLT", "ID_ARPON", "ID_SPLITTER", "ID_NAP"]:
+        out[col] = _get(df, col)
 
     return out[EXPORTE_COLUMNS]

@@ -77,6 +77,7 @@ def export_to_excel(
     df_exporte: pd.DataFrame,
     df_raw: pd.DataFrame,
     df_axtract: pd.DataFrame,
+    df_pnm: pd.DataFrame,
     output_dir: str,
     username: str = "",
 ) -> str:
@@ -113,5 +114,15 @@ def export_to_excel(
                     (len(str(c.value)) if c.value is not None else 0) for c in col_cells
                 )
                 ws_ast.column_dimensions[col_cells[0].column_letter].width = min(max_len + 2, 50)
+
+        if not df_pnm.empty:
+            df_pnm.to_excel(writer, sheet_name="PNM", index=False)
+            ws_pnm = writer.sheets["PNM"]
+            ws_pnm.freeze_panes = "A2"
+            for col_cells in ws_pnm.columns:
+                max_len = max(
+                    (len(str(c.value)) if c.value is not None else 0) for c in col_cells
+                )
+                ws_pnm.column_dimensions[col_cells[0].column_letter].width = min(max_len + 2, 50)
 
     return os.path.abspath(filepath)

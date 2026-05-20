@@ -81,6 +81,9 @@ El `mapper.py` colapsa aliases con `_coalesce()` (ej. `ID_NOE` / `ID_NODO_OPTICO
 | `AXTRACT_URL` | Endpoint NBI API Axtract (POST) |
 | `AXTRACT_USER` | Usuario Basic Auth Axtract |
 | `AXTRACT_PASSWORD` | Password Basic Auth Axtract |
+| `PNM_URL` | Endpoint NBI API PNM (POST) |
+| `PNM_USER` | Usuario Basic Auth PNM |
+| `PNM_PASSWORD` | Password Basic Auth PNM |
 
 ---
 
@@ -90,9 +93,23 @@ El `mapper.py` colapsa aliases con `_coalesce()` (ej. `ID_NOE` / `ID_NODO_OPTICO
 - Solo se consultan filas donde `EQUIPO` es serial ONT GPON (no MAC HFC)
 - Detección GPON: valor no vacío, sin `":"`, y que NO sea 12 hex chars puros (esos son MACs HFC sin formatear)
 - `store_name`: `cpe_store` — campos consultados: `["cpeid", "mode_props", "metadata"]`
+- Query: `$or` con `$regex` sobre `cpeid` y `metadata.ont.sn_raw` (tolerante a formato)
 - Columnas que rellena en EXPORTE: `AXTRACT_ONT_STATUS`, `AXTRACT_RX_POWER`, `AXTRACT_TX_POWER`, `AXTRACT_RX_OLT_POWER`, `AXTRACT_ALARM_CODE`, `AXTRACT_ALARM_SEVERITY`, `AXTRACT_ALARM_STATE`, `AXTRACT_FTTX_TIME`, `AXTRACT_CMTS`, `AXTRACT_CMTS_UP`, `AXTRACT_ARPON`, `AXTRACT_SPLITTER`, `AXTRACT_NAP`, `AXTRACT_PUERTO_NAP`, `REFERENCIA`
 - Hoja Excel: `AXTRACT` (JSON crudo de la API, una fila por incidente consultado)
 - Si faltan `AXTRACT_URL/USER/PASSWORD` → se salta con WARNING, no es error fatal
+
+---
+
+## PNM (NBI API HFC)
+
+- Endpoint: POST `PNM_URL` con Basic Auth
+- Solo se consultan filas donde `MAC_CPE` tiene `":"` (formato MAC HFC)
+- `store_name`: `cm_store` — campos consultados: `["cpeid", "mode_props", "metadata", "last_update"]`
+- Query: `$or` con `$regex` sobre `cpeid`, tolerante a formato con/sin colons
+- Columnas que rellena en EXPORTE: `PNM_R` (NQI11), `PNM_S` (DS SNR avg), `PNM_T` (DS SNR min), `PNM_U` (DS RX power avg), `PNM_V` (DS health), `PNM_W` (US TX power avg), `PNM_X` (US TX power health), `PNM_Y` (preeq health), `PNM_AH` (reg status)
+- Hoja Excel: `PNM` (JSON crudo de la API, una fila por CM consultado)
+- Si faltan `PNM_URL/USER/PASSWORD` → se salta con WARNING, no es error fatal
+- **Cobertura esperada**: cm_store solo contiene módems activamente monitoreados por PNM, no todos los CMs de la red. Cobertura típica: ~2% de HFC activo. Esto es normal.
 
 ---
 

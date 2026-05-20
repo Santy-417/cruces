@@ -36,6 +36,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default=os.getenv("OUTPUT_DIR", "."), help="Directorio de salida del Excel")
     parser.add_argument("--skip-clean", action="store_true", help="Saltear limpieza de IDs (text_cleaner)")
     parser.add_argument("--skip-axtract", action="store_true", help="Saltear consulta a Axtract")
+    parser.add_argument("--skip-pnm", action="store_true", help="Saltear consulta a PNM")
     return parser.parse_args()
 
 
@@ -126,8 +127,25 @@ def run(args: argparse.Namespace):
             )
             log.info("Axtract: %d CPEs encontrados", len(df_axtract_raw))
 
+    _PNM_VARS = ["PNM_URL", "PNM_USER", "PNM_PASSWORD"]
+    df_pnm_raw = pd.DataFrame()
+    if not args.skip_pnm:
+        from src.pnm import enrich_from_pnm
+        missing_pnm = [v for v in _PNM_VARS if not os.getenv(v)]
+        if missing_pnm:
+            log.warning("Faltan vars PNM (%s) — saltando enriquecimiento", ", ".join(missing_pnm))
+        else:
+            log.info("Consultando PNM por CMs HFC...")
+            df_exporte, df_pnm_raw = enrich_from_pnm(
+                df_exporte,
+                os.getenv("PNM_URL"),
+                os.getenv("PNM_USER"),
+                os.getenv("PNM_PASSWORD"),
+            )
+            log.info("PNM: %d CMs encontrados", len(df_pnm_raw))
+
     username = os.getenv("DB_USER", "")
-    path = export_to_excel(df_exporte, df_consolidated, df_axtract_raw, args.output, username)
+    path = export_to_excel(df_exporte, df_consolidated, df_axtract_raw, df_pnm_raw, args.output, username)
     log.info("Excel generado: %s", path)
 
 

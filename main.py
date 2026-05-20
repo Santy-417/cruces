@@ -35,7 +35,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=10, help="Máximo de incidentes a traer (default: 10)")
     parser.add_argument("--output", default=os.getenv("OUTPUT_DIR", "."), help="Directorio de salida del Excel")
     parser.add_argument("--skip-clean", action="store_true", help="Saltear limpieza de IDs (text_cleaner)")
-    parser.add_argument("--skip-astract", action="store_true", help="Saltear consulta a Astract")
+    parser.add_argument("--skip-axtract", action="store_true", help="Saltear consulta a Axtract")
     return parser.parse_args()
 
 
@@ -109,25 +109,25 @@ def run(args: argparse.Namespace):
             df_exporte["ID_AMPLIFICADOR_LIMPIO"].fillna("").astype(str)
         )
 
-    _ASTRACT_VARS = ["ASTRACT_URL", "ASTRACT_USER", "ASTRACT_PASSWORD"]
-    df_astract_raw = pd.DataFrame()
-    if not args.skip_astract:
-        from src.astract import enrich_from_astract
-        missing_astract = [v for v in _ASTRACT_VARS if not os.getenv(v)]
-        if missing_astract:
-            log.warning("Faltan vars Astract (%s) — saltando enriquecimiento", ", ".join(missing_astract))
+    _AXTRACT_VARS = ["AXTRACT_URL", "AXTRACT_USER", "AXTRACT_PASSWORD"]
+    df_axtract_raw = pd.DataFrame()
+    if not args.skip_axtract:
+        from src.axtract import enrich_from_axtract
+        missing_axtract = [v for v in _AXTRACT_VARS if not os.getenv(v)]
+        if missing_axtract:
+            log.warning("Faltan vars Axtract (%s) — saltando enriquecimiento", ", ".join(missing_axtract))
         else:
-            log.info("Consultando Astract por CPEs GPON...")
-            df_exporte, df_astract_raw = enrich_from_astract(
+            log.info("Consultando Axtract por CPEs GPON...")
+            df_exporte, df_axtract_raw = enrich_from_axtract(
                 df_exporte,
-                os.getenv("ASTRACT_URL"),
-                os.getenv("ASTRACT_USER"),
-                os.getenv("ASTRACT_PASSWORD"),
+                os.getenv("AXTRACT_URL"),
+                os.getenv("AXTRACT_USER"),
+                os.getenv("AXTRACT_PASSWORD"),
             )
-            log.info("Astract: %d CPEs encontrados", len(df_astract_raw))
+            log.info("Axtract: %d CPEs encontrados", len(df_axtract_raw))
 
     username = os.getenv("DB_USER", "")
-    path = export_to_excel(df_exporte, df_consolidated, df_astract_raw, args.output, username)
+    path = export_to_excel(df_exporte, df_consolidated, df_axtract_raw, args.output, username)
     log.info("Excel generado: %s", path)
 
 

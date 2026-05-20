@@ -8,24 +8,24 @@ from requests.auth import HTTPBasicAuth
 
 log = logging.getLogger(__name__)
 
-ASTRACT_COLUMNS = [
-    "ASTRACT_ONT_STATUS",
-    "ASTRACT_RX_POWER",
-    "ASTRACT_TX_POWER",
-    "ASTRACT_RX_OLT_POWER",
-    "ASTRACT_ALARM_CODE",
-    "ASTRACT_ALARM_SEVERITY",
-    "ASTRACT_ALARM_STATE",
-    "ASTRACT_FTTX_TIME",
-    "ASTRACT_CMTS",
-    "ASTRACT_CMTS_UP",
-    "ASTRACT_ARPON",
-    "ASTRACT_SPLITTER",
-    "ASTRACT_NAP",
-    "ASTRACT_PUERTO_NAP",
+AXTRACT_COLUMNS = [
+    "AXTRACT_ONT_STATUS",
+    "AXTRACT_RX_POWER",
+    "AXTRACT_TX_POWER",
+    "AXTRACT_RX_OLT_POWER",
+    "AXTRACT_ALARM_CODE",
+    "AXTRACT_ALARM_SEVERITY",
+    "AXTRACT_ALARM_STATE",
+    "AXTRACT_FTTX_TIME",
+    "AXTRACT_CMTS",
+    "AXTRACT_CMTS_UP",
+    "AXTRACT_ARPON",
+    "AXTRACT_SPLITTER",
+    "AXTRACT_NAP",
+    "AXTRACT_PUERTO_NAP",
 ]
 
-_ASTRACT_FIELDS = '["cpeid","mode_props","metadata"]'
+_AXTRACT_FIELDS = '["cpeid","mode_props","metadata"]'
 
 
 def _parse_cdata(raw: str) -> list:
@@ -50,20 +50,21 @@ def _extract_fields(record: dict) -> dict:
     cmts_up   = f"{line_card}/{port}" if line_card and port else None
 
     return {
-        "ASTRACT_ONT_STATUS":     ont.get("oper_status"),
-        "ASTRACT_RX_POWER":       fttx.get("rx_power"),
-        "ASTRACT_TX_POWER":       fttx.get("tx_power"),
-        "ASTRACT_RX_OLT_POWER":   fttx.get("rx_olt_power"),
-        "ASTRACT_ALARM_CODE":     alarms.get("code"),
-        "ASTRACT_ALARM_SEVERITY": alarms.get("severity"),
-        "ASTRACT_ALARM_STATE":    alarms.get("state"),
-        "ASTRACT_FTTX_TIME":      mp.get("fttx_time"),
-        "ASTRACT_CMTS":           olt.get("id"),
-        "ASTRACT_CMTS_UP":        cmts_up,
-        "ASTRACT_ARPON":          topo.get("arpon"),
-        "ASTRACT_SPLITTER":       topo.get("splitter"),
-        "ASTRACT_NAP":            topo.get("nap"),
-        "ASTRACT_PUERTO_NAP":     topo.get("puerto_nap"),
+        "AXTRACT_ONT_STATUS":     ont.get("oper_status"),
+        "AXTRACT_RX_POWER":       fttx.get("rx_power"),
+        "AXTRACT_TX_POWER":       fttx.get("tx_power"),
+        "AXTRACT_RX_OLT_POWER":   fttx.get("rx_olt_power"),
+        "AXTRACT_ALARM_CODE":     alarms.get("code"),
+        "AXTRACT_ALARM_SEVERITY": alarms.get("severity"),
+        "AXTRACT_ALARM_STATE":    alarms.get("state"),
+        "AXTRACT_FTTX_TIME":      mp.get("fttx_time"),
+        "AXTRACT_CMTS":           olt.get("id"),
+        "AXTRACT_CMTS_UP":        cmts_up,
+        "AXTRACT_ARPON":          topo.get("arpon"),
+        "AXTRACT_SPLITTER":       topo.get("splitter"),
+        "AXTRACT_NAP":            topo.get("nap"),
+        "AXTRACT_PUERTO_NAP":     topo.get("puerto_nap"),
+        "REFERENCIA":             ont.get("equipment_id"),
     }
 
 
@@ -92,7 +93,7 @@ def query_cpe(session: requests.Session, url: str, cpeid: str, timeout: int = 10
             "store_name": "cpe_store",
             "query": mongo_query,
             "sort": '[["last_update", -1]]',
-            "fields": _ASTRACT_FIELDS,
+            "fields": _AXTRACT_FIELDS,
             "limit": 1,
             "format": "json",
             "target": "",
@@ -105,20 +106,20 @@ def query_cpe(session: requests.Session, url: str, cpeid: str, timeout: int = 10
         records = _parse_cdata(data)
         return records[0] if records else None
     except requests.exceptions.Timeout:
-        log.warning("Astract timeout para CPE %s", cpeid)
+        log.warning("Axtract timeout para CPE %s", cpeid)
     except Exception as exc:
-        log.warning("Astract error para CPE %s: %s", cpeid, exc)
+        log.warning("Axtract error para CPE %s: %s", cpeid, exc)
     return None
 
 
-def enrich_from_astract(
+def enrich_from_axtract(
     df: pd.DataFrame,
     url: str,
     user: str,
     password: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = df.copy()
-    for col in ASTRACT_COLUMNS:
+    for col in AXTRACT_COLUMNS:
         df[col] = pd.NA
 
     session = requests.Session()
@@ -137,5 +138,5 @@ def enrich_from_astract(
             df.at[idx, col] = val
         raw_rows.append({"NRO_DE_INCIDENTE": row.get("NRO_DE_INCIDENTE"), "cpeid_consultado": cpeid, **record})
 
-    df_astract_raw = pd.DataFrame(raw_rows) if raw_rows else pd.DataFrame()
-    return df, df_astract_raw
+    df_axtract_raw = pd.DataFrame(raw_rows) if raw_rows else pd.DataFrame()
+    return df, df_axtract_raw

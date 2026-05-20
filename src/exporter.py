@@ -76,7 +76,7 @@ def _format_exporte_sheet(ws, df: pd.DataFrame) -> None:
 def export_to_excel(
     df_exporte: pd.DataFrame,
     df_raw: pd.DataFrame,
-    df_astract: pd.DataFrame,
+    df_axtract: pd.DataFrame,
     output_dir: str,
     username: str = "",
 ) -> str:
@@ -104,9 +104,9 @@ def export_to_excel(
             )
             ws_raw.column_dimensions[col_cells[0].column_letter].width = min(max_len + 2, 50)
 
-        if not df_astract.empty:
-            df_astract.to_excel(writer, sheet_name="ASTRACT", index=False)
-            ws_ast = writer.sheets["ASTRACT"]
+        if not df_axtract.empty:
+            df_axtract.to_excel(writer, sheet_name="AXTRACT", index=False)
+            ws_ast = writer.sheets["AXTRACT"]
             ws_ast.freeze_panes = "A2"
             for col_cells in ws_ast.columns:
                 max_len = max(

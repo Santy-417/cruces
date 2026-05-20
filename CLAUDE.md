@@ -31,8 +31,9 @@ main.py
   └── src/connection.py    # get_connection() context manager, thick mode init
   └── src/queries.py       # INCIDENTS_QUERY constante SQL
   └── src/processor.py     # consolidate(df) → pivot por NRO_DE_INCIDENTE
-  └── src/mapper.py        # to_exporte_schema(df) → DataFrame con 37 columnas EXPORTE
+  └── src/mapper.py        # to_exporte_schema(df) → DataFrame con columnas EXPORTE
   └── src/text_cleaner.py  # clean_ids(df) → strip prefijo ciudad en IDs HFC
+  └── src/axtract.py       # enrich_from_axtract() → consulta NBI API GPON, rellena AXTRACT_*
   └── src/exporter.py      # export_to_excel(df, output_dir) → path .xlsx
 ```
 
@@ -41,10 +42,11 @@ main.py
 1. `main.py` carga `.env`, valida vars
 2. `fetch_raw()` ejecuta `INCIDENTS_QUERY` con `fetchmany(50)`, construye DataFrame
 3. `processor.consolidate(df)` pivota: `TIPO_INFRAESTRUCTURA` → columnas (`ID_NODO_OPTICO_ELECTRICO`, `ID_AMPLIFICADOR`, `ID_TAP`, `MAC_CPE`, etc.)
-4. `mapper.to_exporte_schema(df)` mapea al schema fijo de 37 columnas EXPORTE
+4. `mapper.to_exporte_schema(df)` mapea al schema fijo de columnas EXPORTE
 5. `text_cleaner.clean_ids(df)` strip prefijo ciudad de IDs HFC: `BERLMDE-NOE16837` → `NOE16837`
 6. `main.py` calcula `NODO_AMP = ID_NODO_LIMPIO + ID_AMPLIFICADOR_LIMPIO`
-7. `exporter.export_to_excel()` genera `Ingreso_Siebel_YYYY-MM-DD_HH-MM_USER.xlsx` (hojas EXPORTE + RAW)
+7. `axtract.enrich_from_axtract()` consulta NBI API por cada ONT serial GPON, rellena columnas `AXTRACT_*` y `REFERENCIA`
+8. `exporter.export_to_excel()` genera `Ingreso_Siebel_YYYY-MM-DD_HH-MM_USER.xlsx` (hojas EXPORTE + RAW + AXTRACT)
 
 ---
 
@@ -76,6 +78,21 @@ El `mapper.py` colapsa aliases con `_coalesce()` (ej. `ID_NOE` / `ID_NODO_OPTICO
 | `DB_SERVICE_NAME` | Nombre del servicio Oracle |
 | `ORACLE_CLIENT_PATH` | Ruta al Oracle Instant Client (Windows) |
 | `OUTPUT_DIR` | Carpeta destino del Excel (default: `.`) |
+| `AXTRACT_URL` | Endpoint NBI API Axtract (POST) |
+| `AXTRACT_USER` | Usuario Basic Auth Axtract |
+| `AXTRACT_PASSWORD` | Password Basic Auth Axtract |
+
+---
+
+## Axtract (NBI API GPON)
+
+- Endpoint: POST `AXTRACT_URL` con Basic Auth
+- Solo se consultan filas donde `EQUIPO` es serial ONT GPON (no MAC HFC)
+- Detección GPON: valor no vacío, sin `":"`, y que NO sea 12 hex chars puros (esos son MACs HFC sin formatear)
+- `store_name`: `cpe_store` — campos consultados: `["cpeid", "mode_props", "metadata"]`
+- Columnas que rellena en EXPORTE: `AXTRACT_ONT_STATUS`, `AXTRACT_RX_POWER`, `AXTRACT_TX_POWER`, `AXTRACT_RX_OLT_POWER`, `AXTRACT_ALARM_CODE`, `AXTRACT_ALARM_SEVERITY`, `AXTRACT_ALARM_STATE`, `AXTRACT_FTTX_TIME`, `AXTRACT_CMTS`, `AXTRACT_CMTS_UP`, `AXTRACT_ARPON`, `AXTRACT_SPLITTER`, `AXTRACT_NAP`, `AXTRACT_PUERTO_NAP`, `REFERENCIA`
+- Hoja Excel: `AXTRACT` (JSON crudo de la API, una fila por incidente consultado)
+- Si faltan `AXTRACT_URL/USER/PASSWORD` → se salta con WARNING, no es error fatal
 
 ---
 

@@ -114,15 +114,18 @@ crucesmacros/
 ├── .env.example            # Template de credenciales
 ├── .gitignore
 ├── CLAUDE.md               # Guía técnica para desarrollo con IA
-├── Readme.md               # Este archivo
+├── README.md               # Este archivo
 ├── requirements.txt
 ├── main.py                 # Entry point
 └── src/
     ├── __init__.py
     ├── connection.py       # Conexión Oracle (thick mode, context manager)
     ├── queries.py          # Query SQL de incidentes
-    ├── processor.py        # Consolidación/pivot de datos
-    └── exporter.py         # Exportación a Excel
+    ├── processor.py        # Consolidación/pivot de datos (1 fila por incidente)
+    ├── mapper.py           # Mapeo al schema EXPORTE (columnas fijas)
+    ├── text_cleaner.py     # Limpieza de IDs HFC (strip prefijo ciudad)
+    ├── axtract.py          # Enriquecimiento GPON vía NBI API Axtract
+    └── exporter.py         # Exportación a Excel (hojas EXPORTE + RAW + AXTRACT)
 ```
 
 ## Solución de problemas

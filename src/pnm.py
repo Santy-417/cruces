@@ -20,7 +20,7 @@ PNM_COLUMNS = [
     "PNM_AH",  # Reg status
 ]
 
-_PNM_FIELDS = '["cpeid","mode_props","metadata","last_update"]'
+_PNM_FIELDS = '["cpeid","mode_props"]'
 
 
 def _parse_cdata(raw: str) -> list:
@@ -61,16 +61,10 @@ def _is_hfc_mac(val) -> bool:
 
 
 def query_cm(session: requests.Session, url: str, mac: str, timeout: int = 10) -> dict | None:
-    mac_raw = mac.replace(":", "").replace("-", "")
     body = {
         "args": {
             "store_name": "cm_store",
-            "query": json.dumps({
-                "$or": [
-                    {"cpeid": {"$regex": mac, "$options": "i"}},
-                    {"cpeid": {"$regex": mac_raw, "$options": "i"}},
-                ]
-            }),
+            "query": json.dumps({"cpeid": mac}),
             "sort": '[["last_update", -1]]',
             "fields": _PNM_FIELDS,
             "limit": 1,

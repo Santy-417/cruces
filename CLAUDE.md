@@ -104,9 +104,10 @@ El `mapper.py` colapsa aliases con `_coalesce()` (ej. `ID_NOE` / `ID_NODO_OPTICO
 
 - Endpoint: POST `PNM_URL` con Basic Auth
 - Solo se consultan filas donde `MAC_CPE` tiene `":"` (formato MAC HFC)
-- `store_name`: `cm_store` — campos consultados: `["cpeid", "mode_props", "metadata", "last_update"]`
-- Query: `$or` con `$regex` sobre `cpeid`, tolerante a formato con/sin colons
-- Columnas que rellena en EXPORTE: `PNM_R` (NQI11), `PNM_S` (DS SNR avg), `PNM_T` (DS SNR min), `PNM_U` (DS RX power avg), `PNM_V` (DS health), `PNM_W` (US TX power avg), `PNM_X` (US TX power health), `PNM_Y` (preeq health), `PNM_AH` (reg status)
+- `store_name`: `cm_store` — campos consultados: `["cpeid", "mode_props", "metadata"]`
+- Query: exact match `{"cpeid": mac}` con MAC formateada con colons
+- Columnas internas → header Excel: `PNM_R`→"Status" (reg_status string), `PNM_S`→"Dw SNR" (CMTS US SNR min), `PNM_T`→"PL Dw" (DS RX Power min), `PNM_U`→"Up SNR" (DS SNR min), `PNM_V`→"PL Up" (US TX Power max), `PNM_W`→"CMTS", `PNM_X`→"CMTS Up", `PNM_Y`→"US Alias"
+- Formato condicional en EXPORTE (cols W–AA): verde/amarillo/rojo según umbrales por métrica
 - Hoja Excel: `PNM` (JSON crudo de la API, una fila por CM consultado)
 - Si faltan `PNM_URL/USER/PASSWORD` → se salta con WARNING, no es error fatal
 - **Cobertura esperada**: cm_store solo contiene módems activamente monitoreados por PNM, no todos los CMs de la red. Cobertura típica: ~2% de HFC activo. Esto es normal.

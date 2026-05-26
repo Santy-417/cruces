@@ -8,9 +8,18 @@ from openpyxl.utils import get_column_letter
 
 from src.mapper import EXPORTE_COLUMNS
 
-_PNM_COLS = {
-    "PNM_R", "PNM_S", "PNM_T", "PNM_U", "PNM_V", "PNM_W", "PNM_X", "PNM_Y", "PNM_AH",
+_PNM_HEADER_RENAME = {
+    "PNM_R": "Status",
+    "PNM_S": "Dw SNR",
+    "PNM_T": "PL Dw",
+    "PNM_U": "Up SNR",
+    "PNM_V": "PL Up",
+    "PNM_W": "CMTS Up",
+    "PNM_X": "CMTS",
+    "PNM_Y": "US Alias",
 }
+
+_PNM_COLS = set(_PNM_HEADER_RENAME.values())
 
 # Anchos específicos del VBA (por letra de columna Excel, basados en posición fija del schema EXPORTE)
 _LETTER_WIDTHS = {
@@ -26,7 +35,37 @@ _SORT_COLS = ["ID_NODO", "ID_AMPLIFICADOR", "ID_TAP"]
 
 _HEADER_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
 _PNM_FILL = PatternFill(start_color="BFBFBF", end_color="BFBFBF", fill_type="solid")
-_RED_FILL = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+_RED_FILL    = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+_GREEN_FILL  = PatternFill(start_color="92D050", end_color="92D050", fill_type="solid")
+_YELLOW_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+
+_PNM_CF_RULES = [
+    ("PNM_R", [
+        ('{L}2="operational"', _GREEN_FILL),
+        ('{L}2="rangingAutoAdjComplete"', _YELLOW_FILL),
+        ('AND({L}2<>"",{L}2<>"operational",{L}2<>"rangingAutoAdjComplete")', _RED_FILL),
+    ]),
+    ("PNM_S", [
+        ('AND({L}2<>"",{L}2>37)', _GREEN_FILL),
+        ('AND({L}2>=35,{L}2<=37)', _YELLOW_FILL),
+        ('AND({L}2<>"",{L}2<35)', _RED_FILL),
+    ]),
+    ("PNM_T", [
+        ('AND({L}2>=-10,{L}2<=12)', _GREEN_FILL),
+        ('AND({L}2>=-15,{L}2<-10)', _YELLOW_FILL),
+        ('OR({L}2<-15,{L}2>12)', _RED_FILL),
+    ]),
+    ("PNM_U", [
+        ('AND({L}2<>"",{L}2>29)', _GREEN_FILL),
+        ('AND({L}2>=27,{L}2<=29)', _YELLOW_FILL),
+        ('AND({L}2<>"",{L}2<27)', _RED_FILL),
+    ]),
+    ("PNM_V", [
+        ('AND({L}2>=38,{L}2<=47.9)', _GREEN_FILL),
+        ('AND({L}2>=48,{L}2<=50.9)', _YELLOW_FILL),
+        ('OR({L}2<38,{L}2>50.9)', _RED_FILL),
+    ]),
+]
 
 
 def _col_letter_for(col_name: str) -> str:
@@ -72,6 +111,15 @@ def _format_exporte_sheet(ws, df: pd.DataFrame) -> None:
         FormulaRule(formula=[f'AND({k_letter}2<>"",{k_letter}2<>0)'], fill=_RED_FILL),
     )
 
+    for col_name, rules in _PNM_CF_RULES:
+        letter = _col_letter_for(col_name)
+        cf_range = f"{letter}2:{letter}{last_row}"
+        for formula_template, fill in rules:
+            ws.conditional_formatting.add(
+                cf_range,
+                FormulaRule(formula=[formula_template.replace("{L}", letter)], fill=fill),
+            )
+
 
 def export_to_excel(
     df_exporte: pd.DataFrame,
@@ -90,12 +138,13 @@ def export_to_excel(
 
     sort_cols = [c for c in _SORT_COLS if c in df_exporte.columns]
     df_sorted = df_exporte.sort_values(sort_cols, na_position="last").reset_index(drop=True)
+    df_excel = df_sorted.rename(columns=_PNM_HEADER_RENAME)
 
     with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
-        df_sorted.to_excel(writer, sheet_name="EXPORTE", index=False)
+        df_excel.to_excel(writer, sheet_name="EXPORTE", index=False)
         df_raw.to_excel(writer, sheet_name="RAW", index=False)
 
-        _format_exporte_sheet(writer.sheets["EXPORTE"], df_sorted)
+        _format_exporte_sheet(writer.sheets["EXPORTE"], df_excel)
 
         ws_raw = writer.sheets["RAW"]
         ws_raw.freeze_panes = "A2"

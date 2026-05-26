@@ -31,7 +31,6 @@ EXPORTE_COLUMNS = [
     "NODO_AMP",               # AE
     "TBD_AF",                 # AF
     "TBD_AG",                 # AG
-    "PNM_AH",                 # AH (PNM, vacío)
     "ID_CDI",                 # AI
     "EQUIPO",                 # AJ
     "REFERENCIA",             # AK
@@ -102,7 +101,7 @@ def to_exporte_schema(df: pd.DataFrame) -> pd.DataFrame:
     amp_counts = out.groupby("ID_AMPLIFICADOR", dropna=True)["NRO_DE_INCIDENTE"].transform("count")
     out["CONTEO_AMPLIFICADOR"] = amp_counts.where(out["ID_AMPLIFICADOR"].notna(), 0)
 
-    for col in _PNM_R_Y + ["PNM_AH"]:
+    for col in _PNM_R_Y:
         out[col] = pd.NA
 
     # text_cleaner rellena ID_NODO_LIMPIO como fallback

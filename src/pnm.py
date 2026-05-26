@@ -9,18 +9,19 @@ from requests.auth import HTTPBasicAuth
 log = logging.getLogger(__name__)
 
 PNM_COLUMNS = [
-    "PNM_R",   # NQI11 — score de salud compuesto
-    "PNM_S",   # DS SNR promedio
-    "PNM_T",   # DS SNR mínimo
-    "PNM_U",   # DS RX power promedio
-    "PNM_V",   # DS health ("good"/"marginal"/"bad")
-    "PNM_W",   # US TX power promedio
-    "PNM_X",   # US TX power health
-    "PNM_Y",   # Preeq health
-    "PNM_AH",  # Reg status
+    "PNM_R",  # reg_status string
+    "PNM_S",  # CMTS US SNR min (dB)
+    "PNM_T",  # DS RX Power min (dBmV)
+    "PNM_U",  # DS SNR min (dB)
+    "PNM_V",  # US TX Power max (dBmV)
+    "PNM_W",  # MAC Domain Interface
+    "PNM_X",  # CMTS id
+    "PNM_Y",  # Raw Alias
 ]
 
-_PNM_FIELDS = '["cpeid","mode_props"]'
+_PNM_FIELDS = '["cpeid","mode_props","metadata"]'
+
+_MAX_CONSECUTIVE_ERRORS = 10
 
 
 def _parse_cdata(raw: str) -> list:
@@ -32,24 +33,23 @@ def _parse_cdata(raw: str) -> list:
 
 
 def _extract_fields(record: dict) -> dict:
-    mp     = record.get("mode_props") or {}
-    meta   = record.get("metadata") or {}
-    cm     = mp.get("cm") or {}
-    ds     = cm.get("ds") or {}
-    cm_us  = cm.get("cm_us") or {}
-    common = cm.get("common") or {}
-    preeq_info = ((mp.get("preeq") or {}).get("cm_us") or {}).get("preeq") or {}
+    mp        = record.get("mode_props") or {}
+    meta      = record.get("metadata") or {}
+    cm        = mp.get("cm") or {}
+    ds        = cm.get("ds") or {}
+    cm_us     = cm.get("cm_us") or {}
+    cmts_us   = (mp.get("cmts") or {}).get("cmts_us") or {}
+    cmts_meta = meta.get("cmts") or {}
 
     return {
-        "PNM_R":  common.get("nqi11"),
-        "PNM_S":  ds.get("snr_avg"),
-        "PNM_T":  ds.get("snr_min"),
-        "PNM_U":  ds.get("rx_power_avg"),
-        "PNM_V":  ds.get("health"),
-        "PNM_W":  cm_us.get("tx_power_avg"),
-        "PNM_X":  cm_us.get("tx_power_health"),
-        "PNM_Y":  preeq_info.get("preeq_health"),
-        "PNM_AH": meta.get("reg_status"),
+        "PNM_R": meta.get("reg_status"),
+        "PNM_S": cmts_us.get("snr_min"),
+        "PNM_T": ds.get("rx_power_min"),
+        "PNM_U": ds.get("snr_min"),
+        "PNM_V": cm_us.get("tx_power_max"),
+        "PNM_W": meta.get("mac_domain"),      # AB: MAC Domain Interface
+        "PNM_X": cmts_meta.get("id"),         # AC: CMTS id
+        "PNM_Y": cmts_meta.get("raw_alias"),  # AD: raw_alias
     }
 
 
@@ -80,6 +80,9 @@ def query_cm(session: requests.Session, url: str, mac: str, timeout: int = 10) -
         return records[0] if records else None
     except requests.exceptions.Timeout:
         log.warning("PNM timeout para CM %s", mac)
+    except requests.exceptions.ConnectionError as exc:
+        log.warning("PNM conexión perdida para CM %s: %s", mac, exc)
+        raise
     except Exception as exc:
         log.warning("PNM error para CM %s: %s", mac, exc)
     return None
@@ -100,13 +103,29 @@ def enrich_from_pnm(
     session.auth = HTTPBasicAuth(user, password)
 
     raw_rows = []
+    consecutive_errors = 0
     for idx, row in df.iterrows():
+        if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+            log.warning(
+                "PNM: %d errores consecutivos — deteniendo consultas HFC",
+                _MAX_CONSECUTIVE_ERRORS,
+            )
+            break
         mac = row.get("MAC_CPE")
-        if not _is_hfc_mac(mac):
+        tecnologia = str(row.get("TECNOLOGIA", "") or "").upper()
+        if "COAXIAL" not in tecnologia or not _is_hfc_mac(mac):
             continue
-        record = query_cm(session, url, str(mac).strip())
+        try:
+            record = query_cm(session, url, str(mac).strip())
+        except requests.exceptions.ConnectionError:
+            session = requests.Session()
+            session.auth = HTTPBasicAuth(user, password)
+            record = None
         if record is None:
+            consecutive_errors += 1
+            df.at[idx, "PNM_R"] = "Sin respuesta"
             continue
+        consecutive_errors = 0
         fields = _extract_fields(record)
         for col, val in fields.items():
             df.at[idx, col] = val

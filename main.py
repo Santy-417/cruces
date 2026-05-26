@@ -57,8 +57,9 @@ def fetch_raw(limit: int = 10) -> pd.DataFrame:
     from src.connection import get_connection
     from src.queries import INCIDENTS_QUERY
 
-    query = INCIDENTS_QUERY.replace("AND ROWNUM <= 1000", f"AND ROWNUM <= {limit}")
-    query = query.replace("WHERE fila <= 10", f"WHERE fila <= {limit}")
+    effective = limit if limit > 0 else 999999
+    query = INCIDENTS_QUERY.replace("AND ROWNUM <= 1000", f"AND ROWNUM <= {effective}")
+    query = query.replace("WHERE fila <= 10", f"WHERE fila <= {effective}")
 
     log.info("Conectando a Oracle...")
     rows = []

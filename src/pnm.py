@@ -21,7 +21,8 @@ PNM_COLUMNS = [
 
 _PNM_FIELDS = '["cpeid","mode_props","metadata"]'
 
-_MAX_CONSECUTIVE_ERRORS = 10
+_BATCH_SIZE = 50
+_MAX_CONSECUTIVE_ERRORS = 3
 
 
 def _parse_cdata(raw: str) -> list:
@@ -47,9 +48,9 @@ def _extract_fields(record: dict) -> dict:
         "PNM_T": ds.get("rx_power_min"),
         "PNM_U": ds.get("snr_min"),
         "PNM_V": cm_us.get("tx_power_max"),
-        "PNM_W": meta.get("mac_domain_pretty"), # AB: MAC Domain Interface (forma corta)
-        "PNM_X": cmts_meta.get("id"),         # AC: CMTS id
-        "PNM_Y": cmts_meta.get("raw_alias"),  # AD: raw_alias
+        "PNM_W": meta.get("mac_domain_pretty"),
+        "PNM_X": cmts_meta.get("id"),
+        "PNM_Y": cmts_meta.get("raw_alias"),
     }
 
 
@@ -60,14 +61,16 @@ def _is_hfc_mac(val) -> bool:
     return bool(s) and ":" in s
 
 
-def query_cm(session: requests.Session, url: str, mac: str, timeout: int = 10) -> dict | None:
+def query_batch(
+    session: requests.Session, url: str, macs: list, timeout: int = 30
+) -> dict | None:
     body = {
         "args": {
             "store_name": "cm_store",
-            "query": json.dumps({"cpeid": mac}),
+            "query": json.dumps({"$or": [{"cpeid": mac} for mac in macs]}),
             "sort": '[["last_update", -1]]',
             "fields": _PNM_FIELDS,
-            "limit": 1,
+            "limit": len(macs),
             "format": "json",
             "target": "",
         }
@@ -77,14 +80,19 @@ def query_cm(session: requests.Session, url: str, mac: str, timeout: int = 10) -
         resp.raise_for_status()
         data = resp.json().get("return", {}).get("data", "")
         records = _parse_cdata(data)
-        return records[0] if records else None
+        result = {}
+        for r in records:
+            cpeid = r.get("cpeid")
+            if cpeid and cpeid not in result:
+                result[cpeid] = r
+        return result
     except requests.exceptions.Timeout:
-        log.warning("PNM timeout para CM %s", mac)
+        log.warning("PNM timeout para lote de %d MACs", len(macs))
     except requests.exceptions.ConnectionError as exc:
-        log.warning("PNM conexión perdida para CM %s: %s", mac, exc)
+        log.warning("PNM conexión perdida en lote: %s", exc)
         raise
     except Exception as exc:
-        log.warning("PNM error para CM %s: %s", mac, exc)
+        log.warning("PNM error en lote: %s", exc)
     return None
 
 
@@ -102,34 +110,43 @@ def enrich_from_pnm(
     session = requests.Session()
     session.auth = HTTPBasicAuth(user, password)
 
+    hfc_rows = []
+    for idx, row in df.iterrows():
+        tecnologia = str(row.get("TECNOLOGIA", "") or "").upper()
+        mac = row.get("MAC_CPE")
+        if "COAXIAL" in tecnologia and _is_hfc_mac(mac):
+            hfc_rows.append((idx, str(mac).strip(), row.get("NRO_DE_INCIDENTE")))
+
+    log.info("PNM: %d MACs HFC a consultar en lotes de %d", len(hfc_rows), _BATCH_SIZE)
+
     raw_rows = []
     consecutive_errors = 0
-    for idx, row in df.iterrows():
+    for i in range(0, len(hfc_rows), _BATCH_SIZE):
         if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
-            log.warning(
-                "PNM: %d errores consecutivos — deteniendo consultas HFC",
-                _MAX_CONSECUTIVE_ERRORS,
-            )
+            log.warning("PNM: %d errores de lote consecutivos — deteniendo", _MAX_CONSECUTIVE_ERRORS)
             break
-        mac = row.get("MAC_CPE")
-        tecnologia = str(row.get("TECNOLOGIA", "") or "").upper()
-        if "COAXIAL" not in tecnologia or not _is_hfc_mac(mac):
-            continue
+        batch = hfc_rows[i:i + _BATCH_SIZE]
+        macs = [mac for _, mac, _ in batch]
         try:
-            record = query_cm(session, url, str(mac).strip())
+            result_map = query_batch(session, url, macs)
         except requests.exceptions.ConnectionError:
             session = requests.Session()
             session.auth = HTTPBasicAuth(user, password)
-            record = None
-        if record is None:
+            result_map = None
+        if result_map is None:
             consecutive_errors += 1
-            df.at[idx, "PNM_R"] = "Sin respuesta"
+            for idx, mac, _ in batch:
+                df.at[idx, "PNM_R"] = "Sin respuesta"
             continue
         consecutive_errors = 0
-        fields = _extract_fields(record)
-        for col, val in fields.items():
-            df.at[idx, col] = val
-        raw_rows.append({"NRO_DE_INCIDENTE": row.get("NRO_DE_INCIDENTE"), "mac_consultada": mac, **record})
+        for idx, mac, nro in batch:
+            record = result_map.get(mac)
+            if record is None:
+                continue
+            fields = _extract_fields(record)
+            for col, val in fields.items():
+                df.at[idx, col] = val
+            raw_rows.append({"NRO_DE_INCIDENTE": nro, "mac_consultada": mac, **record})
 
     df_pnm_raw = pd.DataFrame(raw_rows) if raw_rows else pd.DataFrame()
     return df, df_pnm_raw

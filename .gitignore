@@ -31,3 +31,7 @@ ENV/
 
 # Logs
 *.log
+
+# Documentos de referencia internos
+*.pdf
+*.xlsm

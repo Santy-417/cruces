@@ -19,7 +19,24 @@ _PNM_HEADER_RENAME = {
     "PNM_Y": "US Alias",
 }
 
-_PNM_COLS = set(_PNM_HEADER_RENAME.values())
+_AXTRACT_HEADER_RENAME = {
+    "AXTRACT_ONT_STATUS":     "ONT Status",
+    "AXTRACT_TX_POWER":       "TX_ONT",
+    "AXTRACT_RX_POWER":       "RX_ONT",
+    "AXTRACT_RX_OLT_POWER":   "OLT_RX_ONU",
+    "AXTRACT_ALARM_CODE":     "RANGING",
+    "AXTRACT_ALARM_SEVERITY": "CLASS_SFP",
+    "AXTRACT_ALARM_STATE":    "Last Down Time",
+    "AXTRACT_FTTX_TIME":      "Last Down Cause",
+    "AXTRACT_CMTS":           "OLT AXTRACT",
+    "AXTRACT_CMTS_UP":        "TARJETA AXTRACT",
+    "AXTRACT_ARPON":          "PUERTO AXTRACT",
+    "AXTRACT_SPLITTER":       "ARPON AXTRACT",
+    "AXTRACT_NAP":            "Splitter AXTRACT",
+    "AXTRACT_PUERTO_NAP":     "NAP AXTRACT",
+}
+
+_PNM_COLS = set(_PNM_HEADER_RENAME.values()) | set(_AXTRACT_HEADER_RENAME.values())
 
 # Anchos específicos del VBA (por letra de columna Excel, basados en posición fija del schema EXPORTE)
 _LETTER_WIDTHS = {
@@ -51,9 +68,9 @@ _PNM_CF_RULES = [
         ('AND({L}2<>"",{L}2<35)', _RED_FILL),
     ]),
     ("PNM_T", [
-        ('AND({L}2>=-10,{L}2<=12)', _GREEN_FILL),
-        ('AND({L}2>=-15,{L}2<-10)', _YELLOW_FILL),
-        ('OR({L}2<-15,{L}2>12)', _RED_FILL),
+        ('AND({L}2<>"",{L}2>=-10,{L}2<=12)', _GREEN_FILL),
+        ('AND({L}2<>"",{L}2>=-15,{L}2<-10)', _YELLOW_FILL),
+        ('AND({L}2<>"",OR({L}2<-15,{L}2>12))', _RED_FILL),
     ]),
     ("PNM_U", [
         ('AND({L}2<>"",{L}2>29)', _GREEN_FILL),
@@ -61,9 +78,9 @@ _PNM_CF_RULES = [
         ('AND({L}2<>"",{L}2<27)', _RED_FILL),
     ]),
     ("PNM_V", [
-        ('AND({L}2>=38,{L}2<=47.9)', _GREEN_FILL),
-        ('AND({L}2>=48,{L}2<=50.9)', _YELLOW_FILL),
-        ('OR({L}2<38,{L}2>50.9)', _RED_FILL),
+        ('AND({L}2<>"",{L}2>=38,{L}2<=47.9)', _GREEN_FILL),
+        ('AND({L}2<>"",{L}2>=48,{L}2<=50.9)', _YELLOW_FILL),
+        ('AND({L}2<>"",OR({L}2<38,{L}2>50.9))', _RED_FILL),
     ]),
 ]
 
@@ -120,6 +137,62 @@ def _format_exporte_sheet(ws, df: pd.DataFrame) -> None:
                 FormulaRule(formula=[formula_template.replace("{L}", letter)], fill=fill),
             )
 
+    # Helper dinámico para columnas AXTRACT (no están en EXPORTE_COLUMNS)
+    cols_list = list(df.columns)
+
+    def _ax_letter(col: str):
+        try:
+            return get_column_letter(cols_list.index(col) + 1)
+        except ValueError:
+            return None
+
+    # CF simples AXTRACT
+    _axtract_simple_cf = [
+        ("ONT Status", [
+            ('{L}2="up"',   _GREEN_FILL),
+            ('{L}2="down"', _RED_FILL),
+        ]),
+        ("TX_ONT", [
+            ('AND({L}2>=0.5,{L}2<=5)',             _GREEN_FILL),
+            ('AND({L}2<>"",OR({L}2<0.5,{L}2>5))', _RED_FILL),
+        ]),
+        ("RX_ONT", [
+            ('AND({L}2>=-27,{L}2<=-10)',                  _GREEN_FILL),
+            ('AND({L}2<>"",OR({L}2<-27,{L}2>-10))',      _RED_FILL),
+        ]),
+    ]
+    for col_name, rules in _axtract_simple_cf:
+        letter = _ax_letter(col_name)
+        if not letter:
+            continue
+        cf_range = f"{letter}2:{letter}{last_row}"
+        for formula_template, fill in rules:
+            ws.conditional_formatting.add(
+                cf_range,
+                FormulaRule(formula=[formula_template.replace("{L}", letter)], fill=fill),
+            )
+
+    # CF dependientes de CLASS_SFP (OLT_RX_ONU y RANGING)
+    sfp = _ax_letter("CLASS_SFP")
+    if sfp:
+        olt = _ax_letter("OLT_RX_ONU")
+        if olt:
+            olt_range = f"{olt}2:{olt}{last_row}"
+            for sfp_type, lo, hi in [("B+", -28, -10), ("C+", -32, -14), ("C++", -35, -17)]:
+                ws.conditional_formatting.add(olt_range, FormulaRule(
+                    formula=[f'AND({sfp}2="{sfp_type}",{olt}2>={lo},{olt}2<={hi})'], fill=_GREEN_FILL))
+                ws.conditional_formatting.add(olt_range, FormulaRule(
+                    formula=[f'AND({sfp}2="{sfp_type}",{olt}2<>"",OR({olt}2<{lo},{olt}2>{hi}))'], fill=_RED_FILL))
+
+        ran = _ax_letter("RANGING")
+        if ran:
+            ran_range = f"{ran}2:{ran}{last_row}"
+            for sfp_type, threshold in [("B+", 10000), ("C+", 15000), ("C++", 20000)]:
+                ws.conditional_formatting.add(ran_range, FormulaRule(
+                    formula=[f'AND({sfp}2="{sfp_type}",{ran}2<={threshold})'], fill=_GREEN_FILL))
+                ws.conditional_formatting.add(ran_range, FormulaRule(
+                    formula=[f'AND({sfp}2="{sfp_type}",{ran}2>{threshold})'], fill=_RED_FILL))
+
 
 def export_to_excel(
     df_exporte: pd.DataFrame,
@@ -138,7 +211,7 @@ def export_to_excel(
 
     sort_cols = [c for c in _SORT_COLS if c in df_exporte.columns]
     df_sorted = df_exporte.sort_values(sort_cols, na_position="last").reset_index(drop=True)
-    df_excel = df_sorted.rename(columns=_PNM_HEADER_RENAME)
+    df_excel = df_sorted.rename(columns={**_PNM_HEADER_RENAME, **_AXTRACT_HEADER_RENAME})
 
     with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
         df_excel.to_excel(writer, sheet_name="EXPORTE", index=False)

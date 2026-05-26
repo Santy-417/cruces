@@ -47,7 +47,7 @@ def _extract_fields(record: dict) -> dict:
         "PNM_T": ds.get("rx_power_min"),
         "PNM_U": ds.get("snr_min"),
         "PNM_V": cm_us.get("tx_power_max"),
-        "PNM_W": meta.get("mac_domain"),      # AB: MAC Domain Interface
+        "PNM_W": meta.get("mac_domain_pretty"), # AB: MAC Domain Interface (forma corta)
         "PNM_X": cmts_meta.get("id"),         # AC: CMTS id
         "PNM_Y": cmts_meta.get("raw_alias"),  # AD: raw_alias
     }

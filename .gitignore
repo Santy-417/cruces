@@ -35,3 +35,7 @@ ENV/
 # Documentos de referencia internos
 *.pdf
 *.xlsm
+
+# Claude Code
+.agents/
+skills-lock.json

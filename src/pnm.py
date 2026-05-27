@@ -121,14 +121,12 @@ def enrich_from_pnm(
 
     raw_rows = []
     consecutive_errors = 0
-    total_batches = (len(hfc_rows) + _BATCH_SIZE - 1) // _BATCH_SIZE
     for i in range(0, len(hfc_rows), _BATCH_SIZE):
         if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
             log.warning("PNM: %d errores de lote consecutivos — deteniendo", _MAX_CONSECUTIVE_ERRORS)
             break
         batch = hfc_rows[i:i + _BATCH_SIZE]
         macs = [mac for _, mac, _ in batch]
-        batch_num = i // _BATCH_SIZE + 1
         try:
             result_map = query_batch(session, url, macs)
         except requests.exceptions.ConnectionError:
@@ -137,12 +135,10 @@ def enrich_from_pnm(
             result_map = None
         if result_map is None:
             consecutive_errors += 1
-            log.warning("PNM: lote %d/%d (%d MACs) — sin respuesta", batch_num, total_batches, len(macs))
             for idx, mac, _ in batch:
                 df.at[idx, "PNM_R"] = "Sin respuesta"
             continue
         consecutive_errors = 0
-        found = 0
         for idx, mac, nro in batch:
             record = result_map.get(mac)
             if record is None:
@@ -151,8 +147,6 @@ def enrich_from_pnm(
             for col, val in fields.items():
                 df.at[idx, col] = val
             raw_rows.append({"NRO_DE_INCIDENTE": nro, "mac_consultada": mac, **record})
-            found += 1
-        log.info("PNM: lote %d/%d (%d MACs) → %d encontrados", batch_num, total_batches, len(macs), found)
 
     df_pnm_raw = pd.DataFrame(raw_rows) if raw_rows else pd.DataFrame()
     return df, df_pnm_raw

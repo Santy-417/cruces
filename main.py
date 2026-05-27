@@ -57,9 +57,8 @@ def fetch_raw(limit: int = 10) -> pd.DataFrame:
     from src.connection import get_connection
     from src.queries import INCIDENTS_QUERY
 
-    effective = limit if limit > 0 else 999999
-    query = INCIDENTS_QUERY.replace("AND ROWNUM <= 1000", f"AND ROWNUM <= {effective}")
-    query = query.replace("WHERE fila <= 10", f"WHERE fila <= {effective}")
+    query = INCIDENTS_QUERY.replace("AND ROWNUM <= 1000", f"AND ROWNUM <= {limit}")
+    query = query.replace("WHERE fila <= 10", f"WHERE fila <= {limit}")
 
     log.info("Conectando a Oracle...")
     rows = []
@@ -67,7 +66,7 @@ def fetch_raw(limit: int = 10) -> pd.DataFrame:
 
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.callTimeout = 120000
+        cursor.callTimeout = max(120_000, limit * 200)
         log.info("Ejecutando query (puede tardar hasta 2 minutos en la primera ejecución)...")
         cursor.execute(query)
         column_names = [desc[0] for desc in cursor.description]

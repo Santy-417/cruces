@@ -20,20 +20,20 @@ _PNM_HEADER_RENAME = {
 }
 
 _AXTRACT_HEADER_RENAME = {
-    "AXTRACT_ONT_STATUS":     "ONT Status",
-    "AXTRACT_TX_POWER":       "TX_ONT",
-    "AXTRACT_RX_POWER":       "RX_ONT",
-    "AXTRACT_RX_OLT_POWER":   "OLT_RX_ONU",
-    "AXTRACT_ALARM_CODE":     "RANGING",
-    "AXTRACT_ALARM_SEVERITY": "CLASS_SFP",
-    "AXTRACT_ALARM_STATE":    "Last Down Time",
-    "AXTRACT_FTTX_TIME":      "Last Down Cause",
-    "AXTRACT_CMTS":           "OLT AXTRACT",
-    "AXTRACT_CMTS_UP":        "TARJETA AXTRACT",
-    "AXTRACT_ARPON":          "PUERTO AXTRACT",
-    "AXTRACT_SPLITTER":       "ARPON AXTRACT",
-    "AXTRACT_NAP":            "Splitter AXTRACT",
-    "AXTRACT_PUERTO_NAP":     "NAP AXTRACT",
+    "AXTRACT_ONT_STATUS":   "ONT Status",
+    "AXTRACT_TX_POWER":     "Last TX Power (dBm)",
+    "AXTRACT_RX_POWER":     "Last RX Power (dBm)",
+    "AXTRACT_RX_OLT_POWER": "Last RX OLT Power (dBm)",
+    "AXTRACT_RANGING":      "Ranging (m)",
+    "AXTRACT_SFP_TYPE":     "SFP Type",
+    "AXTRACT_FTTX_TIME":    "Last Down Time",
+    "AXTRACT_ALARM_CODE":   "Last Down Cause",
+    "AXTRACT_CMTS":         "OLT",
+    "AXTRACT_CMTS_UP":      "Line Card",
+    "AXTRACT_ARPON":        "ARPON AXTRACT",
+    "AXTRACT_SPLITTER":     "Splitter AXTRACT",
+    "AXTRACT_NAP":          "NAP AXTRACT",
+    "AXTRACT_PUERTO_NAP":   "PUERTO NAP AXTRACT",
 }
 
 _PNM_COLS = set(_PNM_HEADER_RENAME.values()) | set(_AXTRACT_HEADER_RENAME.values())
@@ -152,11 +152,11 @@ def _format_exporte_sheet(ws, df: pd.DataFrame) -> None:
             ('{L}2="up"',   _GREEN_FILL),
             ('{L}2="down"', _RED_FILL),
         ]),
-        ("TX_ONT", [
+        ("Last TX Power (dBm)", [
             ('AND({L}2>=0.5,{L}2<=5)',             _GREEN_FILL),
             ('AND({L}2<>"",OR({L}2<0.5,{L}2>5))', _RED_FILL),
         ]),
-        ("RX_ONT", [
+        ("Last RX Power (dBm)", [
             ('AND({L}2>=-27,{L}2<=-10)',                  _GREEN_FILL),
             ('AND({L}2<>"",OR({L}2<-27,{L}2>-10))',      _RED_FILL),
         ]),
@@ -172,22 +172,22 @@ def _format_exporte_sheet(ws, df: pd.DataFrame) -> None:
                 FormulaRule(formula=[formula_template.replace("{L}", letter)], fill=fill),
             )
 
-    # CF dependientes de CLASS_SFP (OLT_RX_ONU y RANGING)
-    sfp = _ax_letter("CLASS_SFP")
+    # CF dependientes de SFP Type (Last RX OLT Power y Ranging)
+    sfp = _ax_letter("SFP Type")
     if sfp:
-        olt = _ax_letter("OLT_RX_ONU")
-        if olt:
-            olt_range = f"{olt}2:{olt}{last_row}"
-            for sfp_type, lo, hi in [("B+", -28, -10), ("C+", -32, -14), ("C++", -35, -17)]:
+        olt_rx = _ax_letter("Last RX OLT Power (dBm)")
+        if olt_rx:
+            olt_range = f"{olt_rx}2:{olt_rx}{last_row}"
+            for sfp_type, lo, hi in [("classbplus", -28, -10), ("classcplus", -32, -14), ("classcplusplus", -35, -17)]:
                 ws.conditional_formatting.add(olt_range, FormulaRule(
-                    formula=[f'AND({sfp}2="{sfp_type}",{olt}2>={lo},{olt}2<={hi})'], fill=_GREEN_FILL))
+                    formula=[f'AND({sfp}2="{sfp_type}",{olt_rx}2>={lo},{olt_rx}2<={hi})'], fill=_GREEN_FILL))
                 ws.conditional_formatting.add(olt_range, FormulaRule(
-                    formula=[f'AND({sfp}2="{sfp_type}",{olt}2<>"",OR({olt}2<{lo},{olt}2>{hi}))'], fill=_RED_FILL))
+                    formula=[f'AND({sfp}2="{sfp_type}",{olt_rx}2<>"",OR({olt_rx}2<{lo},{olt_rx}2>{hi}))'], fill=_RED_FILL))
 
-        ran = _ax_letter("RANGING")
+        ran = _ax_letter("Ranging (m)")
         if ran:
             ran_range = f"{ran}2:{ran}{last_row}"
-            for sfp_type, threshold in [("B+", 10000), ("C+", 15000), ("C++", 20000)]:
+            for sfp_type, threshold in [("classbplus", 10000), ("classcplus", 15000), ("classcplusplus", 20000)]:
                 ws.conditional_formatting.add(ran_range, FormulaRule(
                     formula=[f'AND({sfp}2="{sfp_type}",{ran}2<={threshold})'], fill=_GREEN_FILL))
                 ws.conditional_formatting.add(ran_range, FormulaRule(

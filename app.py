@@ -361,29 +361,33 @@ if running:
     steps   = _get_progress()
     current = steps[-1] if steps else "Iniciando..."
 
-    # Mensaje rotativo durante pasos largos (Axtract ~8 min, PNM ~4 min)
-    hint = ""
-    if "Axtract" in current and "completado" not in current:
-        hint = _AXTRACT_HINTS[int(elapsed / 15) % len(_AXTRACT_HINTS)]
-    elif "PNM" in current and "completado" not in current:
-        hint = _PNM_HINTS[int(elapsed / 15) % len(_PNM_HINTS)]
-
-    with st.container(border=True):
-        st.markdown(f"**{current}**")
-        if hint:
-            st.info(hint)
-        if len(steps) > 1:
-            st.divider()
-            for s in steps[:-1]:
-                st.markdown(f"- {s}")
-        st.divider()
-        st.caption("No cierre esta ventana. El proceso continua en segundo plano.")
-
+    # Barra de progreso arriba
     prog = min(
         sum(1 for s in steps if any(k in s for k in _MILESTONES)) / len(_MILESTONES),
         0.97,
     )
     st.progress(prog, text=f"{int(prog * 100)}% completado")
+
+    # Caja de color segun estado del paso actual
+    _is_done = any(w in current for w in ("completado", "listo", "Sin", "omitido", "Generando"))
+    if _is_done:
+        st.success(current)
+    else:
+        st.info(current)
+
+    # Mensaje rotativo en gris pequeño durante pasos largos
+    hint = ""
+    if "Axtract" in current and "completado" not in current:
+        hint = _AXTRACT_HINTS[int(elapsed / 15) % len(_AXTRACT_HINTS)]
+    elif "PNM" in current and "completado" not in current:
+        hint = _PNM_HINTS[int(elapsed / 15) % len(_PNM_HINTS)]
+    if hint:
+        st.caption(hint)
+
+    # Ultimos 3 pasos completados en texto pequeño
+    prev = steps[:-1][-3:] if len(steps) > 1 else []
+    if prev:
+        st.caption("Pasos recientes: " + "  →  ".join(prev))
 
     time.sleep(3)
     st.rerun()

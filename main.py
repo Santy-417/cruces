@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -31,8 +32,10 @@ def _validate_env():
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="crucesmacros — Exportador de incidentes Siebel")
-    parser.add_argument("--test-connection", action="store_true", help="Probar conexión sin ejecutar query")
-    parser.add_argument("--limit", type=int, default=10, help="Máximo de incidentes a traer (default: 10)")
+    parser.add_argument("--test-connection", action="store_true", help="Probar conexion sin ejecutar query")
+    parser.add_argument("--limit", type=int, default=10, help="Maximo de filas a traer (0 = sin limite, default: 10)")
+    parser.add_argument("--mode", choices=["all", "24h"], default="all",
+                        help="all: todos los activos | 24h: ultimas 24 horas (default: all)")
     parser.add_argument("--output", default=os.getenv("OUTPUT_DIR", "."), help="Directorio de salida del Excel")
     parser.add_argument("--skip-clean", action="store_true", help="Saltear limpieza de IDs (text_cleaner)")
     parser.add_argument("--skip-axtract", action="store_true", help="Saltear consulta a Axtract")
@@ -43,22 +46,27 @@ def _parse_args() -> argparse.Namespace:
 def test_connection():
     from src.connection import get_connection
 
-    log.info("Probando conexión a Oracle...")
+    log.info("Probando conexion a Oracle...")
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.callTimeout = 10000
         cursor.execute("SELECT 1 FROM DUAL")
         row = cursor.fetchone()
         cursor.close()
-    log.info("Conexión exitosa. SELECT 1 FROM DUAL: %s", row[0])
+    log.info("Conexion exitosa. SELECT 1 FROM DUAL: %s", row[0])
 
 
-def fetch_raw(limit: int = 10) -> pd.DataFrame:
+def fetch_raw(limit: int = 10, mode: str = "all") -> pd.DataFrame:
     from src.connection import get_connection
-    from src.queries import INCIDENTS_QUERY
+    from src.queries import INCIDENTS_QUERY, INCIDENTS_QUERY_24H
 
-    query = INCIDENTS_QUERY.replace("AND ROWNUM <= 1000", f"AND ROWNUM <= {limit}")
-    query = query.replace("WHERE fila <= 10", f"WHERE fila <= {limit}")
+    base = INCIDENTS_QUERY_24H if mode == "24h" else INCIDENTS_QUERY
+
+    if limit > 0:
+        query = base.replace("AND ROWNUM <= 1000", f"AND ROWNUM <= {limit}")
+    else:
+        query = base.replace("AND ROWNUM <= 1000", "")
+    timeout_ms = 120_000
 
     log.info("Conectando a Oracle...")
     rows = []
@@ -66,17 +74,34 @@ def fetch_raw(limit: int = 10) -> pd.DataFrame:
 
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.callTimeout = max(120_000, limit * 200)
-        log.info("Ejecutando query (puede tardar hasta 2 minutos en la primera ejecución)...")
-        cursor.execute(query)
+        cursor.callTimeout = timeout_ms
+        log.info("Ejecutando query (modo=%s, limite=%s)...", mode, limit if limit > 0 else "sin limite")
+        log.info("Esperando respuesta de Oracle (mantener VPN activa)...")
+        try:
+            cursor.execute(query)
+        except Exception as e:
+            msg = str(e)
+            if "03113" in msg or "03114" in msg or "closed the connection" in msg.lower():
+                log.error("Conexion perdida con Oracle. Verificar que la VPN este activa durante toda la consulta.")
+            raise
         column_names = [desc[0] for desc in cursor.description]
+        log.info("Oracle respondio. Leyendo datos en lotes de 50...")
+
+        t0 = time.time()
         batch = cursor.fetchmany(numRows=50)
         while batch:
             rows.extend(batch)
+            if len(rows) % 500 == 0:
+                log.info("  %d filas recibidas...", len(rows))
             batch = cursor.fetchmany(numRows=50)
         cursor.close()
 
-    log.info("Filas crudas recibidas: %d", len(rows))
+    elapsed = time.time() - t0
+    if not rows:
+        log.warning("La query no devolvio ningun resultado.")
+    else:
+        log.info("%d filas recibidas en %.1f segundos.", len(rows), elapsed)
+
     return pd.DataFrame(rows, columns=column_names)
 
 
@@ -86,7 +111,7 @@ def run(args: argparse.Namespace):
     from src.text_cleaner import clean_ids
     from src.exporter import export_to_excel
 
-    df_raw = fetch_raw(limit=args.limit)
+    df_raw = fetch_raw(limit=args.limit, mode=args.mode)
 
     if df_raw.empty:
         log.info("No se encontraron incidentes activos. No se genera Excel.")
@@ -94,7 +119,7 @@ def run(args: argparse.Namespace):
 
     log.info("Consolidando por incidente...")
     df_consolidated = consolidate(df_raw)
-    log.info("Incidentes únicos procesados: %d", len(df_consolidated))
+    log.info("Incidentes unicos procesados: %d", len(df_consolidated))
 
     if "TECNOLOGÍA" in df_consolidated.columns:
         for tech, n in df_consolidated["TECNOLOGÍA"].value_counts().items():

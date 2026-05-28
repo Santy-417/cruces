@@ -116,11 +116,61 @@ _PNM_HINTS = [
     "Estoy procesando la informacion de cada CM. No cierre la ventana...",
 ]
 
-_MILESTONES = [
-    "Conectando", "Ejecutando", "Leyendo datos", "Oracle:",
-    "Consolidando", "Incidentes", "Preparando", "Limpiando",
-    "Axtract", "Axtract completado", "PNM", "PNM completado", "Generando",
+# Pasos ordenados del pipeline: (label, markers_activo, markers_completado)
+_PIPELINE_STEPS = [
+    ("Conectar a Oracle",
+     ["Conectando"],
+     ["Ejecutando", "Oracle:", "Consolidando", "Cruzando", "Generando"]),
+    ("Ejecutar y leer datos Oracle",
+     ["Ejecutando", "Leyendo"],
+     ["Consolidando", "Cruzando", "Generando"]),
+    ("Consolidar y preparar datos",
+     ["Consolidando", "Incidentes", "Preparando", "Limpiando"],
+     ["Cruzando datos GPON", "Cruzando datos HFC", "Generando"]),
+    ("Cruzar datos GPON (Axtract)",
+     ["Cruzando datos GPON"],
+     ["Axtract completado", "Axtract omitido", "Cruzando datos HFC", "PNM completado", "Generando"]),
+    ("Cruzar datos HFC (PNM)",
+     ["Cruzando datos HFC"],
+     ["PNM completado", "PNM omitido", "Generando"]),
+    ("Generar Excel",
+     ["Generando"],
+     []),
 ]
+# Rango de progreso (inicio, fin) por paso
+_STEP_BOUNDS = [(0.0, 0.10), (0.10, 0.28), (0.28, 0.46),
+                (0.46, 0.70), (0.70, 0.90), (0.90, 0.97)]
+
+
+def _calc_progress(steps: list[str]) -> float:
+    all_text = " ".join(steps)
+    prog = 0.02
+    for i, (_, cur_markers, done_markers) in enumerate(_PIPELINE_STEPS):
+        lo, hi = _STEP_BOUNDS[i]
+        if any(d in all_text for d in done_markers):
+            prog = hi
+        elif any(c in all_text for c in cur_markers):
+            prog = max(prog, (lo + hi) / 2)
+    return min(prog, 0.97)
+
+
+def _render_stepper(steps: list[str]) -> None:
+    all_text = " ".join(steps)
+    lines = []
+    for label, cur_markers, done_markers in _PIPELINE_STEPS:
+        is_done    = any(d in all_text for d in done_markers)
+        is_current = not is_done and any(c in all_text for c in cur_markers)
+        if is_done:
+            icon, color, weight = "&#10003;", "#2E7D32", "600"
+        elif is_current:
+            icon, color, weight = "&#9654;", "#1565C0", "700"
+        else:
+            icon, color, weight = "&#9675;", "#9E9E9E", "400"
+        lines.append(
+            f'<div style="margin:5px 0;color:{color};font-size:1rem;font-weight:{weight};">'
+            f'{icon}&nbsp;&nbsp;{label}</div>'
+        )
+    st.markdown("\n".join(lines), unsafe_allow_html=True)
 
 
 def _get_progress():
@@ -129,9 +179,14 @@ def _get_progress():
         return []
     try:
         with open(LOG_FILE, encoding="utf-8", errors="replace") as f:
+            # Leer solo los ultimos 500 KB para no acumular memoria en runs largos
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 500_000))
             raw = f.readlines()
     except Exception:
         return []
+    # Quedarse solo con las lineas desde el ultimo inicio de run
     start = 0
     for i, line in enumerate(raw):
         if "Conectando a Oracle" in line:
@@ -157,16 +212,18 @@ def _get_progress():
 
 @st.dialog("Confirmar generacion de reporte")
 def _confirm_dialog():
-    mode  = st.session_state.get("confirm_mode",  "all")
-    limit = st.session_state.get("confirm_limit", 1000)
+    mode  = st.session_state.get("confirm_mode", "all")
+    limit = (int(st.session_state.get("sidebar_limit", 1000))
+             if mode == "custom"
+             else st.session_state.get("confirm_limit", 0))
     desc = {
         "custom": f"Consulta personalizada — primeras **{limit:,}** filas activas",
         "24h":    "Ultimas 24 horas — incidentes actualizados en las ultimas 24 h",
         "all":    "Consulta general — **todos** los incidentes activos (~15 min)",
     }
     st.markdown(desc.get(mode, mode))
-    st.warning("El proceso incluye Oracle + Axtract + PNM. "
-               "Nadie mas podra generar mientras este en curso.")
+    st.error("Mientras se genera el reporte no podras realizar ninguna accion en la aplicacion. "
+             "Otros usuarios tampoco podran generar hasta que este proceso termine.")
     c1, c2 = st.columns(2)
     with c1:
         if st.button("Confirmar", type="primary", use_container_width=True):
@@ -189,8 +246,13 @@ def _load_excel(output_dir: str):
                    key=os.path.getmtime, reverse=True)
     if not files:
         return None, None
-    latest = files[0]
-    return pd.read_excel(latest, sheet_name=None, engine="openpyxl"), latest
+    for path in files:
+        try:
+            return pd.read_excel(path, sheet_name=None, engine="openpyxl"), path
+        except Exception:
+            # Archivo en escritura o corrupto — intentar el siguiente
+            continue
+    return None, None
 
 
 # ── Styles ────────────────────────────────────────────────────────────────────
@@ -260,6 +322,9 @@ _COL_STYLERS = {
 
 def _apply_styles(df: pd.DataFrame):
     styler = df.style
+    float_cols = df.select_dtypes(include="float").columns.tolist()
+    if float_cols:
+        styler = styler.format({col: "{:.3f}" for col in float_cols}, na_rep="")
     for col, fn in _COL_STYLERS.items():
         if col in df.columns:
             styler = styler.map(fn, subset=[col])
@@ -305,15 +370,16 @@ with st.sidebar:
         st.button("Ultimas 24 horas",       disabled=True, key="_db2")
         st.button("Consulta general",        disabled=True, key="_db3")
     else:
-        limit_val = st.number_input(
+        st.number_input(
             "Cantidad de filas",
             min_value=1, max_value=50_000,
             value=1_000, step=500,
+            key="sidebar_limit",
             help="Solo aplica al boton 'Consulta personalizada'.",
         )
         if st.button("Consulta personalizada", use_container_width=True):
             st.session_state.confirm_mode  = "custom"
-            st.session_state.confirm_limit = int(limit_val)
+            st.session_state.confirm_limit = int(st.session_state.sidebar_limit)
         if st.button("Ultimas 24 horas", use_container_width=True):
             st.session_state.confirm_mode  = "24h"
             st.session_state.confirm_limit = 0
@@ -334,6 +400,7 @@ with st.sidebar:
                 file_name=os.path.basename(excel_path),
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch",
+                disabled=running,
             )
     else:
         st.caption("Sin archivo generado aun.")
@@ -358,37 +425,38 @@ if running:
     st.title("Crucesmacros — Generando reporte")
     st.caption(f"En ejecucion hace {m_el}m {s_el}s")
 
-    steps   = _get_progress()
-    current = steps[-1] if steps else "Iniciando..."
+    # Toda la logica de display en try/except: si falla, el rerun loop NO se detiene
+    try:
+        steps   = _get_progress()
+        current = steps[-1] if steps else "Iniciando..."
 
-    # Barra de progreso arriba
-    prog = min(
-        sum(1 for s in steps if any(k in s for k in _MILESTONES)) / len(_MILESTONES),
-        0.97,
-    )
-    st.progress(prog, text=f"{int(prog * 100)}% completado")
+        prog = _calc_progress(steps)
+        st.progress(prog, text=f"{int(prog * 100)}% completado")
 
-    # Caja de color segun estado del paso actual
-    _is_done = any(w in current for w in ("completado", "listo", "Sin", "omitido", "Generando"))
-    if _is_done:
-        st.success(current)
-    else:
-        st.info(current)
+        _is_done = any(w in current for w in ("completado", "omitido", "Sin incidentes"))
+        if _is_done:
+            st.success(current)
+        else:
+            st.info(current)
 
-    # Mensaje rotativo en gris pequeño durante pasos largos
-    hint = ""
-    if "Axtract" in current and "completado" not in current:
-        hint = _AXTRACT_HINTS[int(elapsed / 15) % len(_AXTRACT_HINTS)]
-    elif "PNM" in current and "completado" not in current:
-        hint = _PNM_HINTS[int(elapsed / 15) % len(_PNM_HINTS)]
-    if hint:
-        st.caption(hint)
+        hint = ""
+        if "Axtract" in current and "completado" not in current:
+            hint = _AXTRACT_HINTS[int(elapsed / 15) % len(_AXTRACT_HINTS)]
+        elif "PNM" in current and "completado" not in current:
+            hint = _PNM_HINTS[int(elapsed / 15) % len(_PNM_HINTS)]
+        if hint:
+            st.markdown(
+                f'<p style="color:#888;font-size:0.95rem;margin:2px 0 12px 0;">{hint}</p>',
+                unsafe_allow_html=True,
+            )
 
-    # Ultimos 3 pasos completados en texto pequeño
-    prev = steps[:-1][-3:] if len(steps) > 1 else []
-    if prev:
-        st.caption("Pasos recientes: " + "  →  ".join(prev))
+        st.divider()
+        _render_stepper(steps)
 
+    except Exception as e:
+        st.warning(f"Error al leer progreso: {e}")
+
+    # sleep + rerun SIEMPRE se ejecutan, independiente de lo que pase arriba
     time.sleep(3)
     st.rerun()
 

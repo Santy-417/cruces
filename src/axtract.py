@@ -23,6 +23,7 @@ AXTRACT_COLUMNS = [
     "AXTRACT_SPLITTER",
     "AXTRACT_NAP",
     "AXTRACT_PUERTO_NAP",
+    "AXTRACT_TRANSCEIVER_TEMP",
 ]
 
 _AXTRACT_FIELDS = '["cpeid","mode_props","metadata"]'
@@ -68,8 +69,9 @@ def _extract_fields(record: dict) -> dict:
         "AXTRACT_ARPON":       topo.get("arpon"),
         "AXTRACT_SPLITTER":    topo.get("splitter"),
         "AXTRACT_NAP":         topo.get("nap"),
-        "AXTRACT_PUERTO_NAP":  topo.get("puerto_nap"),
-        "REFERENCIA":          ont.get("equipment_id"),
+        "AXTRACT_PUERTO_NAP":       topo.get("puerto_nap"),
+        "AXTRACT_TRANSCEIVER_TEMP": fttx.get("transceiver_temperature"),
+        "REFERENCIA":               ont.get("equipment_id"),
     }
 
 

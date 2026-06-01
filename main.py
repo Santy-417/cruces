@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 import sys
@@ -11,15 +12,18 @@ load_dotenv()
 
 REQUIRED_VARS = ["DB_USER", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_SERVICE_NAME", "ORACLE_CLIENT_PATH"]
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("crucesmacros.log", encoding="utf-8"),
-    ],
-)
 log = logging.getLogger(__name__)
+
+
+def _setup_logging(log_file: str) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(log_file, encoding="utf-8"),
+        ],
+    )
 
 
 def _validate_env():
@@ -40,6 +44,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-clean", action="store_true", help="Saltear limpieza de IDs (text_cleaner)")
     parser.add_argument("--skip-axtract", action="store_true", help="Saltear consulta a Axtract")
     parser.add_argument("--skip-pnm", action="store_true", help="Saltear consulta a PNM")
+    parser.add_argument("--log-file", default="crucesmacros.log",
+                        help="Archivo de log (default: crucesmacros.log)")
+    parser.add_argument("--enrich", choices=["axtract", "pnm"],
+                        help="Enriquecer Excel existente sin consultar Oracle (requiere --file)")
+    parser.add_argument("--file", default=None,
+                        help="Ruta al Excel a enriquecer con --enrich")
     return parser.parse_args()
 
 
@@ -175,12 +185,77 @@ def run(args: argparse.Namespace):
     log.info("Excel generado: %s", path)
 
 
+def enrich_existing(args: argparse.Namespace):
+    from src.exporter import (export_to_excel,
+                               REVERSE_PNM_RENAME, REVERSE_AXTRACT_RENAME)
+
+    path = args.file
+    if not path or not os.path.exists(path):
+        log.error("--file no especificado o archivo no existe: %s", path)
+        sys.exit(1)
+
+    # Marker de inicio para que app.py pueda slicear el log desde aquí
+    log.info("Conectando a Oracle...")
+    log.info("Cargando Excel: %s", path)
+    sheets = pd.read_excel(path, sheet_name=None, engine="openpyxl")
+    df_exporte = sheets.get("EXPORTE", pd.DataFrame())
+    df_raw     = sheets.get("RAW",     pd.DataFrame())
+    df_axtract = sheets.get("AXTRACT", pd.DataFrame())
+    df_pnm     = sheets.get("PNM",     pd.DataFrame())
+
+    # Revertir renombres de headers para recuperar columnas internas
+    df_exporte = df_exporte.rename(columns={**REVERSE_PNM_RENAME, **REVERSE_AXTRACT_RENAME})
+
+    username   = os.getenv("DB_USER", "")
+    output_dir = os.path.dirname(os.path.abspath(path))
+
+    if args.enrich == "axtract":
+        _AXTRACT_VARS = ["AXTRACT_URL", "AXTRACT_USER", "AXTRACT_PASSWORD"]
+        missing = [v for v in _AXTRACT_VARS if not os.getenv(v)]
+        if missing:
+            log.error("Faltan vars Axtract: %s", ", ".join(missing))
+            sys.exit(1)
+        log.info("Consultando Axtract por CPEs GPON...")
+        from src.axtract import enrich_from_axtract
+        df_exporte, df_axtract = enrich_from_axtract(
+            df_exporte,
+            os.getenv("AXTRACT_URL"),
+            os.getenv("AXTRACT_USER"),
+            os.getenv("AXTRACT_PASSWORD"),
+        )
+        log.info("Axtract: %d CPEs encontrados", len(df_axtract))
+
+    elif args.enrich == "pnm":
+        _PNM_VARS = ["PNM_URL", "PNM_USER", "PNM_PASSWORD"]
+        missing = [v for v in _PNM_VARS if not os.getenv(v)]
+        if missing:
+            log.error("Faltan vars PNM: %s", ", ".join(missing))
+            sys.exit(1)
+        log.info("Consultando PNM por CMs HFC...")
+        from src.pnm import enrich_from_pnm
+        df_exporte, df_pnm = enrich_from_pnm(
+            df_exporte,
+            os.getenv("PNM_URL"),
+            os.getenv("PNM_USER"),
+            os.getenv("PNM_PASSWORD"),
+        )
+        log.info("PNM: %d CMs encontrados", len(df_pnm))
+
+    log.info("Generando Excel...")
+    path_out = export_to_excel(df_exporte, df_raw, df_axtract, df_pnm,
+                               output_dir, username, filepath=path)
+    log.info("Excel generado: %s", os.path.abspath(path_out))
+
+
 def main():
-    _validate_env()
     args = _parse_args()
+    _setup_logging(args.log_file)
+    _validate_env()
 
     if args.test_connection:
         test_connection()
+    elif args.enrich:
+        enrich_existing(args)
     else:
         run(args)
 

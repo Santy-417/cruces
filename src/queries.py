@@ -98,5 +98,5 @@ INCIDENTS_QUERY = _BASE_SELECT
 # Solo incidentes actualizados en las últimas 24 horas
 INCIDENTS_QUERY_24H = _BASE_SELECT.replace(
     "AND ROWNUM <= 1000",
-    "AND (S.SR_STAT_DT - (5/24)) > SYSDATE - (24/24)\n  AND ROWNUM <= 1000",
+    "AND S.SR_STAT_DT > SYSDATE - (24/24) + (5/24)\n  AND ROWNUM <= 1000",
 )

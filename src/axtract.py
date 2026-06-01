@@ -37,17 +37,22 @@ def _parse_cdata(raw: str) -> list:
 
 
 def _extract_fields(record: dict) -> dict:
-    mp     = record.get("mode_props") or {}
-    fttx   = (mp.get("fttx") or {}).get("fttx") or {}
-    alarms = mp.get("fttx_alarms") or {}
-    meta   = record.get("metadata") or {}
-    ont    = meta.get("ont") or {}
-    olt    = meta.get("olt") or {}
-    topo   = meta.get("topo") or {}
+    mp            = record.get("mode_props") or {}
+    fttx          = (mp.get("fttx") or {}).get("fttx") or {}
+    meta          = record.get("metadata") or {}
+    ont           = meta.get("ont") or {}
+    olt           = meta.get("olt") or {}
+    topo          = meta.get("topo") or {}
+    fttx_olt_info = (mp.get("fttx_olt") or {}).get("device_info") or {}
 
     line_card = olt.get("line_card")
     port      = olt.get("port")
     cmts_up   = f"{line_card}/{port}" if line_card and port else None
+
+    fttx_time = mp.get("fttx_time")
+    fttx_time_clean = (fttx_time.split(".")[0]
+                       if isinstance(fttx_time, str) and "." in fttx_time
+                       else fttx_time)
 
     return {
         "AXTRACT_ONT_STATUS":  ont.get("oper_status"),
@@ -56,8 +61,8 @@ def _extract_fields(record: dict) -> dict:
         "AXTRACT_RX_OLT_POWER": fttx.get("rx_olt_power"),
         "AXTRACT_RANGING":     ont.get("ranging"),
         "AXTRACT_SFP_TYPE":    ont.get("if_sfp"),
-        "AXTRACT_FTTX_TIME":   mp.get("fttx_time"),
-        "AXTRACT_ALARM_CODE":  alarms.get("code"),
+        "AXTRACT_FTTX_TIME":   fttx_time_clean,
+        "AXTRACT_ALARM_CODE":  fttx_olt_info.get("last_down_cause"),
         "AXTRACT_CMTS":        olt.get("id"),
         "AXTRACT_CMTS_UP":     cmts_up,
         "AXTRACT_ARPON":       topo.get("arpon"),

@@ -44,9 +44,9 @@ def _extract_fields(record: dict) -> dict:
 
     return {
         "PNM_R": meta.get("reg_status"),
-        "PNM_S": cmts_us.get("snr_min"),
+        "PNM_S": ds.get("snr_min"),
         "PNM_T": ds.get("rx_power_min"),
-        "PNM_U": ds.get("snr_min"),
+        "PNM_U": cmts_us.get("snr_min"),
         "PNM_V": cm_us.get("tx_power_max"),
         "PNM_W": meta.get("mac_domain_pretty"),
         "PNM_X": cmts_meta.get("id"),

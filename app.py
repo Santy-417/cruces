@@ -1,15 +1,14 @@
 """
 crucesmacros — Visor Streamlit (Fase 2)
 Fase 1: visor con filtros y colores.
-Fase 2: botones Generar + lock file + progreso en tiempo real.
+Fase 2: botones Generar + progreso en tiempo real + multi-usuario.
 """
 
-import json
 import os
 import re
 import subprocess
 import sys
-import time
+import uuid
 from datetime import datetime
 from glob import glob
 
@@ -22,8 +21,6 @@ load_dotenv()
 
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", ".")
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
-LOCK_FILE  = os.path.join(_BASE_DIR, ".pipeline.lock")
-LOG_FILE   = os.path.join(_BASE_DIR, "crucesmacros.log")
 _WIN       = sys.platform == "win32"
 
 st.set_page_config(page_title="Crucesmacros — Visor", layout="wide")
@@ -31,35 +28,100 @@ st.set_page_config(page_title="Crucesmacros — Visor", layout="wide")
 
 # ── Pipeline control ──────────────────────────────────────────────────────────
 
-def _is_running():
-    """(running: bool, lock_info: dict | None). Stale si PID muerto."""
-    if not os.path.exists(LOCK_FILE):
-        return False, None
+def _is_running() -> bool:
+    """True si el pipeline de esta sesión sigue vivo."""
+    pid = st.session_state.get("pipeline_pid")
+    if pid is None:
+        return False
+    if psutil.pid_exists(pid):
+        return True
+    # Proceso terminó — detectar Excel generado y limpiar estado
+    _on_pipeline_finished()
+    return False
+
+
+def _on_pipeline_finished() -> None:
+    start_str = st.session_state.get("pipeline_start", "")
+    log_file  = st.session_state.get("pipeline_log", "")
+    mode      = st.session_state.get("pipeline_mode", "")
     try:
-        with open(LOCK_FILE, encoding="utf-8") as f:
-            info = json.load(f)
-        return psutil.pid_exists(info.get("pid", -1)), info
+        start_dt = datetime.fromisoformat(start_str)
+        files = glob(os.path.join(OUTPUT_DIR, "Ingreso_Siebel_*.xlsx"))
+        new_files = [f for f in files
+                     if datetime.fromtimestamp(os.path.getmtime(f)) >= start_dt]
+        if new_files:
+            st.session_state["last_excel_path"] = max(new_files, key=os.path.getmtime)
     except Exception:
-        return False, None
-
-
-def _clear_lock():
-    try:
-        os.remove(LOCK_FILE)
-    except FileNotFoundError:
         pass
+    # Registrar qué datos quedaron en el Excel
+    if mode == "enrich_axtract":
+        st.session_state["last_has_axtract"] = True
+    elif mode == "enrich_pnm":
+        st.session_state["last_has_pnm"] = True
+    else:
+        skip_ax  = st.session_state.get("pipeline_skip_axtract", False)
+        skip_pnm = st.session_state.get("pipeline_skip_pnm",     False)
+        st.session_state["last_has_axtract"] = not skip_ax
+        st.session_state["last_has_pnm"]     = not skip_pnm
+    # Limpiar log temporal
+    if log_file and log_file != "crucesmacros.log":
+        try:
+            os.remove(log_file)
+        except FileNotFoundError:
+            pass
+    for key in ("pipeline_pid", "pipeline_start", "pipeline_mode",
+                "pipeline_limit", "pipeline_log", "pipeline_enrich_file",
+                "pipeline_skip_axtract", "pipeline_skip_pnm"):
+        st.session_state.pop(key, None)
+    _load_excel.clear()
 
 
-def _launch(mode: str, limit: int) -> None:
+def _launch(mode: str, limit: int,
+            skip_axtract: bool = False, skip_pnm: bool = False) -> None:
     actual_mode = "all" if mode == "custom" else mode
-    cmd = [sys.executable, "main.py", "--limit", str(limit), "--mode", actual_mode]
-    kwargs: dict = {"cwd": _BASE_DIR, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    log_id   = uuid.uuid4().hex[:8]
+    log_file = os.path.join(_BASE_DIR, f"crucesmacros_{log_id}.log")
+    cmd = [sys.executable, "main.py",
+           "--limit", str(limit), "--mode", actual_mode,
+           "--log-file", log_file]
+    if skip_axtract:
+        cmd.append("--skip-axtract")
+    if skip_pnm:
+        cmd.append("--skip-pnm")
+    kwargs: dict = {"cwd": _BASE_DIR,
+                    "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if _WIN:
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     proc = subprocess.Popen(cmd, **kwargs)
-    with open(LOCK_FILE, "w", encoding="utf-8") as f:
-        json.dump({"pid": proc.pid, "start": datetime.now().isoformat(),
-                   "mode": mode, "limit": limit}, f)
+    st.session_state.update({
+        "pipeline_pid":           proc.pid,
+        "pipeline_start":         datetime.now().isoformat(),
+        "pipeline_mode":          mode,
+        "pipeline_limit":         limit,
+        "pipeline_log":           log_file,
+        "pipeline_skip_axtract":  skip_axtract,
+        "pipeline_skip_pnm":      skip_pnm,
+    })
+
+
+def _launch_enrich(which: str, file_path: str) -> None:
+    log_id   = uuid.uuid4().hex[:8]
+    log_file = os.path.join(_BASE_DIR, f"crucesmacros_{log_id}.log")
+    cmd = [sys.executable, "main.py",
+           "--enrich", which, "--file", file_path,
+           "--log-file", log_file]
+    kwargs: dict = {"cwd": _BASE_DIR,
+                    "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if _WIN:
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    proc = subprocess.Popen(cmd, **kwargs)
+    st.session_state.update({
+        "pipeline_pid":          proc.pid,
+        "pipeline_start":        datetime.now().isoformat(),
+        "pipeline_mode":         f"enrich_{which}",
+        "pipeline_log":          log_file,
+        "pipeline_enrich_file":  file_path,
+    })
 
 
 # ── Progress parsing ──────────────────────────────────────────────────────────
@@ -67,6 +129,8 @@ def _launch(mode: str, limit: int) -> None:
 _LOG_PATTERNS = [
     (re.compile(r"Conectando a Oracle"),
      "Conectando a Oracle..."),
+    (re.compile(r"Cargando Excel"),
+     "Cargando Excel existente..."),
     (re.compile(r"Ejecutando query.*modo=(\w+).*limite=(\S+)"),
      lambda m: f"Ejecutando consulta (modo: {m.group(1)}, limite: {m.group(2)})..."),
     (re.compile(r"Oracle respondio"),
@@ -116,37 +180,85 @@ _PNM_HINTS = [
     "Estoy procesando la informacion de cada CM. No cierre la ventana...",
 ]
 
-# Pasos ordenados del pipeline: (label, markers_activo, markers_completado)
-_PIPELINE_STEPS = [
-    ("Conectar a Oracle",
-     ["Conectando"],
-     ["Ejecutando", "Oracle:", "Consolidando", "Cruzando", "Generando"]),
-    ("Ejecutar y leer datos Oracle",
-     ["Ejecutando", "Leyendo"],
-     ["Consolidando", "Cruzando", "Generando"]),
-    ("Consolidar y preparar datos",
-     ["Consolidando", "Incidentes", "Preparando", "Limpiando"],
-     ["Cruzando datos GPON", "Cruzando datos HFC", "Generando"]),
-    ("Cruzar datos GPON (Axtract)",
-     ["Cruzando datos GPON"],
-     ["Axtract completado", "Axtract omitido", "Cruzando datos HFC", "PNM completado", "Generando"]),
-    ("Cruzar datos HFC (PNM)",
-     ["Cruzando datos HFC"],
-     ["PNM completado", "PNM omitido", "Generando"]),
-    ("Generar Excel",
-     ["Generando"],
-     []),
-]
-# Rango de progreso (inicio, fin) por paso
-_STEP_BOUNDS = [(0.0, 0.10), (0.10, 0.28), (0.28, 0.46),
-                (0.46, 0.70), (0.70, 0.90), (0.90, 0.97)]
+def _make_pipeline_steps(skip_axtract: bool = False, skip_pnm: bool = False):
+    """Genera lista de pasos y bounds de progreso según servicios seleccionados."""
+    if not skip_axtract:
+        after_consolidate = ["Cruzando datos GPON", "Cruzando datos HFC", "Generando"]
+    elif not skip_pnm:
+        after_consolidate = ["Cruzando datos HFC", "Generando"]
+    else:
+        after_consolidate = ["Generando"]
+
+    steps = [
+        ("Conectar a Oracle",
+         ["Conectando"],
+         ["Ejecutando", "Oracle:", "Consolidando", "Cruzando", "Generando"]),
+        ("Ejecutar y leer datos Oracle",
+         ["Ejecutando", "Leyendo"],
+         ["Consolidando", "Cruzando", "Generando"]),
+        ("Consolidar y preparar datos",
+         ["Consolidando", "Incidentes", "Preparando", "Limpiando"],
+         after_consolidate),
+    ]
+    if not skip_axtract:
+        steps.append((
+            "Cruzar datos GPON (Axtract)",
+            ["Cruzando datos GPON"],
+            ["Axtract completado", "Axtract omitido", "Cruzando datos HFC", "Generando"],
+        ))
+    if not skip_pnm:
+        steps.append((
+            "Cruzar datos HFC (PNM)",
+            ["Cruzando datos HFC"],
+            ["PNM completado", "PNM omitido", "Generando"],
+        ))
+    steps.append(("Generar Excel", ["Generando"], []))
+
+    if not skip_axtract and not skip_pnm:
+        bounds = [(0.0, 0.10), (0.10, 0.28), (0.28, 0.46),
+                  (0.46, 0.70), (0.70, 0.90), (0.90, 0.97)]
+    elif not skip_axtract or not skip_pnm:
+        bounds = [(0.0, 0.10), (0.10, 0.28), (0.28, 0.46),
+                  (0.46, 0.90), (0.90, 0.97)]
+    else:
+        bounds = [(0.0, 0.10), (0.10, 0.28), (0.28, 0.70), (0.70, 0.97)]
+
+    return steps, bounds
 
 
-def _calc_progress(steps: list[str]) -> float:
+# Pasos para enriquecimiento (Axtract o PNM)
+_ENRICH_STEPS = {
+    "axtract": [
+        ("Cargar Excel existente",
+         ["Cargando Excel"],
+         ["Cruzando datos GPON", "Consultando Axtract"]),
+        ("Consultar Axtract (GPON)",
+         ["Cruzando datos GPON", "Consultando Axtract"],
+         ["Axtract completado", "Generando"]),
+        ("Actualizar Excel",
+         ["Generando"],
+         []),
+    ],
+    "pnm": [
+        ("Cargar Excel existente",
+         ["Cargando Excel"],
+         ["Cruzando datos HFC", "Consultando PNM"]),
+        ("Consultar PNM (HFC)",
+         ["Cruzando datos HFC", "Consultando PNM"],
+         ["PNM completado", "Generando"]),
+        ("Actualizar Excel",
+         ["Generando"],
+         []),
+    ],
+}
+_ENRICH_BOUNDS = [(0.0, 0.15), (0.15, 0.90), (0.90, 0.97)]
+
+
+def _calc_progress(steps: list[str], steps_def, bounds) -> float:
     all_text = " ".join(steps)
     prog = 0.02
-    for i, (_, cur_markers, done_markers) in enumerate(_PIPELINE_STEPS):
-        lo, hi = _STEP_BOUNDS[i]
+    for i, (_, cur_markers, done_markers) in enumerate(steps_def):
+        lo, hi = bounds[i]
         if any(d in all_text for d in done_markers):
             prog = hi
         elif any(c in all_text for c in cur_markers):
@@ -154,10 +266,10 @@ def _calc_progress(steps: list[str]) -> float:
     return min(prog, 0.97)
 
 
-def _render_stepper(steps: list[str]) -> None:
+def _render_stepper(steps: list[str], steps_def) -> None:
     all_text = " ".join(steps)
     lines = []
-    for label, cur_markers, done_markers in _PIPELINE_STEPS:
+    for label, cur_markers, done_markers in steps_def:
         is_done    = any(d in all_text for d in done_markers)
         is_current = not is_done and any(c in all_text for c in cur_markers)
         if is_done:
@@ -173,20 +285,19 @@ def _render_stepper(steps: list[str]) -> None:
     st.markdown("\n".join(lines), unsafe_allow_html=True)
 
 
-def _get_progress():
-    """Parsea crucesmacros.log y retorna pasos amigables de la ejecucion actual."""
-    if not os.path.exists(LOG_FILE):
+def _get_progress() -> list[str]:
+    """Parsea el log de esta sesión y retorna pasos amigables."""
+    log_file = st.session_state.get("pipeline_log", "")
+    if not log_file or not os.path.exists(log_file):
         return []
     try:
-        with open(LOG_FILE, encoding="utf-8", errors="replace") as f:
-            # Leer solo los ultimos 500 KB para no acumular memoria en runs largos
+        with open(log_file, encoding="utf-8", errors="replace") as f:
             f.seek(0, 2)
             size = f.tell()
             f.seek(max(0, size - 500_000))
             raw = f.readlines()
     except Exception:
         return []
-    # Quedarse solo con las lineas desde el ultimo inicio de run
     start = 0
     for i, line in enumerate(raw):
         if "Conectando a Oracle" in line:
@@ -208,7 +319,7 @@ def _get_progress():
     return steps
 
 
-# ── Confirmation dialog ───────────────────────────────────────────────────────
+# ── Confirmation dialogs ──────────────────────────────────────────────────────
 
 @st.dialog("Confirmar generacion de reporte")
 def _confirm_dialog():
@@ -222,20 +333,56 @@ def _confirm_dialog():
         "all":    "Consulta general — **todos** los incidentes activos (~15 min)",
     }
     st.markdown(desc.get(mode, mode))
-    st.error("Mientras se genera el reporte no podras realizar ninguna accion en la aplicacion. "
-             "Otros usuarios tampoco podran generar hasta que este proceso termine.")
+    st.divider()
+    st.markdown("**Enriquecimiento de datos** *(puede hacerse despues si lo omites ahora)*")
+    inc_axtract = st.checkbox("Incluir Axtract — GPON (~8 min)", value=True, key="dlg_axtract")
+    inc_pnm     = st.checkbox("Incluir PNM — HFC (~4 min)",     value=True, key="dlg_pnm")
+    st.divider()
+    st.error("Mientras se genera el reporte no podras realizar ninguna accion en esta sesion.")
+    _already = st.session_state.get("pipeline_pid") is not None
+    c1, c2 = st.columns(2)
+    if not inc_axtract and not inc_pnm:
+        st.error("Debes seleccionar al menos una tecnologia (GPON o HFC) para generar el reporte.")
+    with c1:
+        if st.button("Confirmar", type="primary", use_container_width=True,
+                     disabled=_already or (not inc_axtract and not inc_pnm)):
+            _launch(mode, limit,
+                    skip_axtract=not inc_axtract,
+                    skip_pnm=not inc_pnm)
+            st.session_state.pop("confirm_mode",  None)
+            st.session_state.pop("confirm_limit", None)
+            st.rerun(scope="app")
+    with c2:
+        if st.button("Cancelar", use_container_width=True, disabled=_already):
+            st.session_state.pop("confirm_mode",  None)
+            st.session_state.pop("confirm_limit", None)
+            st.rerun(scope="app")
+
+
+@st.dialog("Confirmar enriquecimiento")
+def _confirm_enrich_dialog():
+    which = st.session_state.get("enrich_mode", "")
+    fpath = st.session_state.get("enrich_file", "")
+    if which == "axtract":
+        label = "GPON con Axtract (~8 min)"
+    else:
+        label = "HFC con PNM (~4 min)"
+    st.markdown(f"**{label}**")
+    st.markdown(f"Archivo: `{os.path.basename(fpath)}`")
+    st.warning("El Excel existente sera actualizado con los datos nuevos.")
+    _already = st.session_state.get("pipeline_pid") is not None
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Confirmar", type="primary", use_container_width=True):
-            _launch(mode, limit)
-            st.session_state.pop("confirm_mode",  None)
-            st.session_state.pop("confirm_limit", None)
-            st.rerun()
+        if st.button("Confirmar", type="primary", use_container_width=True, disabled=_already):
+            _launch_enrich(which, fpath)
+            st.session_state.pop("enrich_mode", None)
+            st.session_state.pop("enrich_file", None)
+            st.rerun(scope="app")
     with c2:
-        if st.button("Cancelar", use_container_width=True):
-            st.session_state.pop("confirm_mode",  None)
-            st.session_state.pop("confirm_limit", None)
-            st.rerun()
+        if st.button("Cancelar", use_container_width=True, disabled=_already):
+            st.session_state.pop("enrich_mode", None)
+            st.session_state.pop("enrich_file", None)
+            st.rerun(scope="app")
 
 
 # ── Excel loader ──────────────────────────────────────────────────────────────
@@ -250,7 +397,6 @@ def _load_excel(output_dir: str):
         try:
             return pd.read_excel(path, sheet_name=None, engine="openpyxl"), path
         except Exception:
-            # Archivo en escritura o corrupto — intentar el siguiente
             continue
     return None, None
 
@@ -341,17 +487,25 @@ def _text_filter(df: pd.DataFrame, q: str) -> pd.DataFrame:
     return df[mask]
 
 
-# ── Estado de la app ──────────────────────────────────────────────────────────
+# ── Estado de la sesión ───────────────────────────────────────────────────────
 
-running, lock_info = _is_running()
+running = _is_running()
 
-if not running and lock_info is not None:
-    # Lock residual — proceso termino; limpiar y forzar recarga de Excel
-    _clear_lock()
-    _load_excel.clear()
-    lock_info = None
+# Si ya hay pipeline activo, limpiar cualquier estado de diálogo pendiente
+# para evitar que el diálogo reaparezca en el siguiente rerun
+if running:
+    st.session_state.pop("confirm_mode",  None)
+    st.session_state.pop("confirm_limit", None)
+    st.session_state.pop("enrich_mode",   None)
+    st.session_state.pop("enrich_file",   None)
 
 sheets, excel_path = _load_excel(OUTPUT_DIR)
+
+# Excel target para enriquecimiento: priorizar el generado en esta sesión
+_session_excel = st.session_state.get("last_excel_path")
+_target_excel  = (_session_excel
+                  if _session_excel and os.path.exists(_session_excel)
+                  else excel_path)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
@@ -359,12 +513,28 @@ with st.sidebar:
     st.subheader("Generar reporte")
 
     if running:
-        info  = lock_info or {}
-        mlbl  = {"all": "General", "24h": "Ultimas 24h",
-                 "custom": "Personalizada"}.get(info.get("mode", ""), "")
-        llbl  = (f"{info.get('limit', 0):,} filas"
-                 if info.get("limit", 0) > 0 else "sin limite")
-        st.info(f"Pipeline en ejecucion  \n**Modo:** {mlbl}  \n**Limite:** {llbl}")
+        info  = st.session_state
+        mode  = info.get("pipeline_mode", "")
+        mlbl  = {"all": "General", "24h": "Ultimas 24h", "custom": "Personalizada",
+                 "enrich_axtract": "Enriq. GPON", "enrich_pnm": "Enriq. HFC"}.get(mode, mode)
+        llbl  = (f"{info.get('pipeline_limit', 0):,} filas"
+                 if info.get("pipeline_limit", 0) > 0 else "")
+        msg   = f"**Modo:** {mlbl}"
+        if llbl:
+            msg += f"  \n**Limite:** {llbl}"
+        if mode not in ("enrich_axtract", "enrich_pnm"):
+            skip_ax  = info.get("pipeline_skip_axtract", False)
+            skip_pnm = info.get("pipeline_skip_pnm",     False)
+            if not skip_ax and not skip_pnm:
+                datos_lbl = "GPON + HFC"
+            elif not skip_ax:
+                datos_lbl = "Solo GPON (Axtract)"
+            elif not skip_pnm:
+                datos_lbl = "Solo HFC (PNM)"
+            else:
+                datos_lbl = "Sin enriquecimiento"
+            msg += f"  \n**Datos:** {datos_lbl}"
+        st.info(f"Pipeline en ejecucion  \n{msg}")
         st.number_input("Cantidad de filas", value=1000, disabled=True, key="_dlimit")
         st.button("Consulta personalizada", disabled=True, key="_db1")
         st.button("Ultimas 24 horas",       disabled=True, key="_db2")
@@ -393,72 +563,122 @@ with st.sidebar:
         mod_dt = datetime.fromtimestamp(os.path.getmtime(excel_path))
         st.caption(f"Archivo: **{os.path.basename(excel_path)}**")
         st.caption(f"Generado: {mod_dt.strftime('%d/%m/%Y %H:%M')}")
-        st.divider()
-        with open(excel_path, "rb") as fh:
-            st.download_button(
-                "Descargar Excel", fh,
-                file_name=os.path.basename(excel_path),
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                width="stretch",
-                disabled=running,
-            )
+        if not running:
+            st.divider()
+            with open(excel_path, "rb") as fh:
+                st.download_button(
+                    "Descargar Excel", fh,
+                    file_name=os.path.basename(excel_path),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width="stretch",
+                )
     else:
         st.caption("Sin archivo generado aun.")
 
-# Dialog fuera del sidebar para que se renderice a nivel de pagina
+    # Botones de enriquecimiento — solo si hay Excel, no carga, y el servicio fue omitido
+    if _target_excel and os.path.exists(_target_excel) and not running:
+        show_gpon = not st.session_state.get("last_has_axtract", False)
+        show_hfc  = not st.session_state.get("last_has_pnm",     False)
+        if show_gpon or show_hfc:
+            st.divider()
+            st.caption("Enriquecer reporte:")
+            if show_gpon and show_hfc:
+                col_a, col_p = st.columns(2)
+                with col_a:
+                    if st.button("GPON\n(Axtract)", use_container_width=True, key="btn_enrich_axtract"):
+                        st.session_state["enrich_mode"] = "axtract"
+                        st.session_state["enrich_file"] = _target_excel
+                with col_p:
+                    if st.button("HFC\n(PNM)", use_container_width=True, key="btn_enrich_pnm"):
+                        st.session_state["enrich_mode"] = "pnm"
+                        st.session_state["enrich_file"] = _target_excel
+            elif show_gpon:
+                if st.button("Enriquecer GPON (Axtract)", use_container_width=True, key="btn_enrich_axtract"):
+                    st.session_state["enrich_mode"] = "axtract"
+                    st.session_state["enrich_file"] = _target_excel
+            else:
+                if st.button("Enriquecer HFC (PNM)", use_container_width=True, key="btn_enrich_pnm"):
+                    st.session_state["enrich_mode"] = "pnm"
+                    st.session_state["enrich_file"] = _target_excel
+
+
+# Dialogs fuera del sidebar para que se rendericen a nivel de pagina
 if not running and st.session_state.get("confirm_mode"):
     _confirm_dialog()
+elif not running and st.session_state.get("enrich_mode"):
+    _confirm_enrich_dialog()
+
 
 # ── Area principal ────────────────────────────────────────────────────────────
 
 if running:
-    info      = lock_info or {}
-    start_str = info.get("start", "")
-    elapsed   = 0.0
-    if start_str:
+    pipeline_mode = st.session_state.get("pipeline_mode", "")
+
+    # Título estático — solo se re-renderiza en full rerun
+    if pipeline_mode == "enrich_axtract":
+        st.title("Crucesmacros — Enriqueciendo GPON (Axtract)")
+        steps_def = _ENRICH_STEPS["axtract"]
+        bounds    = _ENRICH_BOUNDS
+    elif pipeline_mode == "enrich_pnm":
+        st.title("Crucesmacros — Enriqueciendo HFC (PNM)")
+        steps_def = _ENRICH_STEPS["pnm"]
+        bounds    = _ENRICH_BOUNDS
+    else:
+        st.title("Crucesmacros — Generando reporte")
+        _skip_ax  = st.session_state.get("pipeline_skip_axtract", False)
+        _skip_pnm = st.session_state.get("pipeline_skip_pnm",     False)
+        steps_def, bounds = _make_pipeline_steps(_skip_ax, _skip_pnm)
+
+    # Área de progreso: se auto-refresca cada 3 s SIN tocar el sidebar
+    @st.fragment(run_every=3)
+    def _progress_area():
+        pid = st.session_state.get("pipeline_pid")
+        if pid is None or not psutil.pid_exists(pid):
+            _on_pipeline_finished()
+            st.rerun(scope="app")
+            return
+
+        start_str = st.session_state.get("pipeline_start", "")
+        elapsed = 0.0
+        if start_str:
+            try:
+                elapsed = (datetime.now() - datetime.fromisoformat(start_str)).total_seconds()
+            except Exception:
+                pass
+        m_el, s_el = divmod(int(elapsed), 60)
+        st.caption(f"En ejecucion hace {m_el}m {s_el}s")
+
         try:
-            elapsed = (datetime.now() - datetime.fromisoformat(start_str)).total_seconds()
-        except Exception:
-            pass
-    m_el, s_el = divmod(int(elapsed), 60)
+            steps   = _get_progress()
+            current = steps[-1] if steps else "Iniciando..."
 
-    st.title("Crucesmacros — Generando reporte")
-    st.caption(f"En ejecucion hace {m_el}m {s_el}s")
+            prog = _calc_progress(steps, steps_def, bounds)
+            st.progress(prog, text=f"{int(prog * 100)}% completado")
 
-    # Toda la logica de display en try/except: si falla, el rerun loop NO se detiene
-    try:
-        steps   = _get_progress()
-        current = steps[-1] if steps else "Iniciando..."
+            _is_done = any(w in current for w in ("completado", "omitido", "Sin incidentes"))
+            if _is_done:
+                st.success(current)
+            else:
+                st.info(current)
 
-        prog = _calc_progress(steps)
-        st.progress(prog, text=f"{int(prog * 100)}% completado")
+            hint = ""
+            if "Axtract" in current and "completado" not in current:
+                hint = _AXTRACT_HINTS[int(elapsed / 15) % len(_AXTRACT_HINTS)]
+            elif "PNM" in current and "completado" not in current:
+                hint = _PNM_HINTS[int(elapsed / 15) % len(_PNM_HINTS)]
+            if hint:
+                st.markdown(
+                    f'<p style="color:#888;font-size:0.95rem;margin:2px 0 12px 0;">{hint}</p>',
+                    unsafe_allow_html=True,
+                )
 
-        _is_done = any(w in current for w in ("completado", "omitido", "Sin incidentes"))
-        if _is_done:
-            st.success(current)
-        else:
-            st.info(current)
+            st.divider()
+            _render_stepper(steps, steps_def)
 
-        hint = ""
-        if "Axtract" in current and "completado" not in current:
-            hint = _AXTRACT_HINTS[int(elapsed / 15) % len(_AXTRACT_HINTS)]
-        elif "PNM" in current and "completado" not in current:
-            hint = _PNM_HINTS[int(elapsed / 15) % len(_PNM_HINTS)]
-        if hint:
-            st.markdown(
-                f'<p style="color:#888;font-size:0.95rem;margin:2px 0 12px 0;">{hint}</p>',
-                unsafe_allow_html=True,
-            )
+        except Exception as e:
+            st.warning(f"Error al leer progreso: {e}")
 
-        st.divider()
-        _render_stepper(steps)
-
-    except Exception as e:
-        st.warning(f"Error al leer progreso: {e}")
-
-    # sleep + rerun SIEMPRE se ejecutan, independiente de lo que pase arriba
-    time.sleep(3)
-    st.rerun()
+    _progress_area()
 
 else:
     # ── Visor normal ──────────────────────────────────────────────────────────

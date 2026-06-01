@@ -38,6 +38,10 @@ _AXTRACT_HEADER_RENAME = {
 
 _PNM_COLS = set(_PNM_HEADER_RENAME.values()) | set(_AXTRACT_HEADER_RENAME.values())
 
+# Reverse mappings for reading back from Excel display names to internal column names
+REVERSE_PNM_RENAME     = {v: k for k, v in _PNM_HEADER_RENAME.items()}
+REVERSE_AXTRACT_RENAME = {v: k for k, v in _AXTRACT_HEADER_RENAME.items()}
+
 # Anchos específicos del VBA (por letra de columna Excel, basados en posición fija del schema EXPORTE)
 _LETTER_WIDTHS = {
     "D": 8,
@@ -201,13 +205,15 @@ def export_to_excel(
     df_pnm: pd.DataFrame,
     output_dir: str,
     username: str = "",
+    filepath: str | None = None,
 ) -> str:
     os.makedirs(output_dir, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    user_suffix = f"_{username}" if username else ""
-    filename = f"Ingreso_Siebel_{timestamp}{user_suffix}.xlsx"
-    filepath = os.path.join(output_dir, filename)
+    if filepath is None:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        user_suffix = f"_{username}" if username else ""
+        filename = f"Ingreso_Siebel_{timestamp}{user_suffix}.xlsx"
+        filepath = os.path.join(output_dir, filename)
 
     sort_cols = [c for c in _SORT_COLS if c in df_exporte.columns]
     df_sorted = df_exporte.sort_values(sort_cols, na_position="last").reset_index(drop=True)

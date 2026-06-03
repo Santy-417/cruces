@@ -38,8 +38,8 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="crucesmacros — Exportador de incidentes Siebel")
     parser.add_argument("--test-connection", action="store_true", help="Probar conexion sin ejecutar query")
     parser.add_argument("--limit", type=int, default=10, help="Maximo de filas a traer (0 = sin limite, default: 10)")
-    parser.add_argument("--mode", choices=["all", "24h"], default="all",
-                        help="all: todos los activos | 24h: ultimas 24 horas (default: all)")
+    parser.add_argument("--mode", choices=["all", "10h", "24h"], default="all",
+                        help="all: todos los activos | 10h: ultimas 10h | 24h: ultimas 24h (default: all)")
     parser.add_argument("--output", default=os.getenv("OUTPUT_DIR", "."), help="Directorio de salida del Excel")
     parser.add_argument("--skip-clean", action="store_true", help="Saltear limpieza de IDs (text_cleaner)")
     parser.add_argument("--skip-axtract", action="store_true", help="Saltear consulta a Axtract")
@@ -68,15 +68,20 @@ def test_connection():
 
 def fetch_raw(limit: int = 10, mode: str = "all") -> pd.DataFrame:
     from src.connection import get_connection
-    from src.queries import INCIDENTS_QUERY, INCIDENTS_QUERY_24H
+    from src.queries import INCIDENTS_QUERY, INCIDENTS_QUERY_10H, INCIDENTS_QUERY_24H
 
-    base = INCIDENTS_QUERY_24H if mode == "24h" else INCIDENTS_QUERY
+    if mode == "10h":
+        base = INCIDENTS_QUERY_10H
+    elif mode == "24h":
+        base = INCIDENTS_QUERY_24H
+    else:
+        base = INCIDENTS_QUERY
 
     if limit > 0:
         query = base.replace("AND ROWNUM <= 1000", f"AND ROWNUM <= {limit}")
     else:
         query = base.replace("AND ROWNUM <= 1000", "")
-    timeout_ms = 120_000
+    timeout_ms = 600_000 if mode in ("10h", "24h") else 120_000
 
     log.info("Conectando a Oracle...")
     rows = []
@@ -101,7 +106,7 @@ def fetch_raw(limit: int = 10, mode: str = "all") -> pd.DataFrame:
         batch = cursor.fetchmany(numRows=50)
         while batch:
             rows.extend(batch)
-            if len(rows) % 500 == 0:
+            if len(rows) % 200 == 0:
                 log.info("  %d filas recibidas...", len(rows))
             batch = cursor.fetchmany(numRows=50)
         cursor.close()
@@ -252,12 +257,16 @@ def main():
     _setup_logging(args.log_file)
     _validate_env()
 
-    if args.test_connection:
-        test_connection()
-    elif args.enrich:
-        enrich_existing(args)
-    else:
-        run(args)
+    try:
+        if args.test_connection:
+            test_connection()
+        elif args.enrich:
+            enrich_existing(args)
+        else:
+            run(args)
+    except KeyboardInterrupt:
+        log.info("Proceso cancelado por el usuario (Ctrl+C).")
+        sys.exit(0)
 
 
 if __name__ == "__main__":

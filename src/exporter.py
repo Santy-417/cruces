@@ -198,6 +198,18 @@ def _format_exporte_sheet(ws, df: pd.DataFrame) -> None:
                 ws.conditional_formatting.add(ran_range, FormulaRule(
                     formula=[f'AND({sfp}2="{sfp_type}",{ran}2>{threshold})'], fill=_RED_FILL))
 
+    _NUMERIC_COLS_1D = [
+        "Last TX Power (dBm)", "Last RX Power (dBm)", "Last RX OLT Power (dBm)",
+        "Ranging (m)", "Transceiver Temperature",
+        "Dw SNR", "PL Dw", "Up SNR", "PL Up",
+    ]
+    for col_name in _NUMERIC_COLS_1D:
+        letter = _ax_letter(col_name)
+        if not letter:
+            continue
+        for cell in ws[letter][1:]:
+            cell.number_format = "0.0"
+
 
 def export_to_excel(
     df_exporte: pd.DataFrame,
@@ -218,6 +230,13 @@ def export_to_excel(
 
     sort_cols = [c for c in _SORT_COLS if c in df_exporte.columns]
     df_sorted = df_exporte.sort_values(sort_cols, na_position="last").reset_index(drop=True)
+
+    # Restaurar orden: EXPORTE_COLUMNS primero (PNM en W–AD), columnas extra al final
+    exporte_set  = set(EXPORTE_COLUMNS)
+    ordered_base = [c for c in EXPORTE_COLUMNS if c in df_sorted.columns]
+    extra_cols   = [c for c in df_sorted.columns if c not in exporte_set]
+    df_sorted    = df_sorted[ordered_base + extra_cols]
+
     df_excel = df_sorted.rename(columns={**_PNM_HEADER_RENAME, **_AXTRACT_HEADER_RENAME})
 
     with pd.ExcelWriter(filepath, engine="openpyxl") as writer:

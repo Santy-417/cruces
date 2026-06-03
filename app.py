@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+pd.set_option("styler.render.max_elements", 2_000_000)
+
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", ".")
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 _WIN       = sys.platform == "win32"
@@ -58,7 +60,7 @@ def _on_pipeline_finished() -> None:
         st.session_state["last_has_axtract"] = True
     elif mode == "enrich_pnm":
         st.session_state["last_has_pnm"] = True
-    else:
+    else:   
         skip_ax  = st.session_state.get("pipeline_skip_axtract", False)
         skip_pnm = st.session_state.get("pipeline_skip_pnm",     False)
         st.session_state["last_has_axtract"] = not skip_ax
@@ -67,7 +69,30 @@ def _on_pipeline_finished() -> None:
     if log_file and log_file != "crucesmacros.log":
         try:
             os.remove(log_file)
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError):
+            pass
+    for key in ("pipeline_pid", "pipeline_start", "pipeline_mode",
+                "pipeline_limit", "pipeline_log", "pipeline_enrich_file",
+                "pipeline_skip_axtract", "pipeline_skip_pnm"):
+        st.session_state.pop(key, None)
+    _load_excel.clear()
+
+
+def _kill_pipeline() -> None:
+    """Mata el proceso pipeline y limpia session_state sin detectar Excel."""
+    pid = st.session_state.get("pipeline_pid")
+    if pid is not None:
+        try:
+            proc = psutil.Process(pid)
+            proc.kill()
+            proc.wait(timeout=5)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+            pass
+    log_file = st.session_state.get("pipeline_log", "")
+    if log_file and log_file != "crucesmacros.log":
+        try:
+            os.remove(log_file)
+        except (FileNotFoundError, PermissionError):
             pass
     for key in ("pipeline_pid", "pipeline_start", "pipeline_mode",
                 "pipeline_limit", "pipeline_log", "pipeline_enrich_file",
@@ -178,6 +203,12 @@ _PNM_HINTS = [
     "Haciendo cruce de datos con PNM. Esto puede tardar unos minutos...",
     "Procesando informacion de la red coaxial. Por favor espere...",
     "Estoy procesando la informacion de cada CM. No cierre la ventana...",
+]
+_ORACLE_HINTS = [
+    "Consultando la base de datos Oracle. Mantener la VPN activa...",
+    "Oracle esta procesando la consulta. Esto puede tardar varios minutos...",
+    "Espere, la base de datos esta leyendo los incidentes...",
+    "En modo 24h la consulta puede tardar hasta 10 min. No cierre la ventana...",
 ]
 
 def _make_pipeline_steps(skip_axtract: bool = False, skip_pnm: bool = False):
@@ -329,6 +360,7 @@ def _confirm_dialog():
              else st.session_state.get("confirm_limit", 0))
     desc = {
         "custom": f"Consulta personalizada — primeras **{limit:,}** filas activas",
+        "10h":    "Ultimas 10 horas — incidentes actualizados en las ultimas 10 h",
         "24h":    "Ultimas 24 horas — incidentes actualizados en las ultimas 24 h",
         "all":    "Consulta general — **todos** los incidentes activos (~15 min)",
     }
@@ -515,7 +547,8 @@ with st.sidebar:
     if running:
         info  = st.session_state
         mode  = info.get("pipeline_mode", "")
-        mlbl  = {"all": "General", "24h": "Ultimas 24h", "custom": "Personalizada",
+        mlbl  = {"all": "General", "10h": "Ultimas 10h", "24h": "Ultimas 24h",
+                 "custom": "Personalizada",
                  "enrich_axtract": "Enriq. GPON", "enrich_pnm": "Enriq. HFC"}.get(mode, mode)
         llbl  = (f"{info.get('pipeline_limit', 0):,} filas"
                  if info.get("pipeline_limit", 0) > 0 else "")
@@ -535,10 +568,14 @@ with st.sidebar:
                 datos_lbl = "Sin enriquecimiento"
             msg += f"  \n**Datos:** {datos_lbl}"
         st.info(f"Pipeline en ejecucion  \n{msg}")
+        if st.button("Detener cruce", type="primary", use_container_width=True, key="_stop_sidebar"):
+            _kill_pipeline()
+            st.rerun(scope="app")
         st.number_input("Cantidad de filas", value=1000, disabled=True, key="_dlimit")
         st.button("Consulta personalizada", disabled=True, key="_db1")
-        st.button("Ultimas 24 horas",       disabled=True, key="_db2")
-        st.button("Consulta general",        disabled=True, key="_db3")
+        st.button("Ultimas 10 horas",       disabled=True, key="_db2")
+        st.button("Ultimas 24 horas",       disabled=True, key="_db3")
+        st.button("Consulta general",        disabled=True, key="_db4")
     else:
         st.number_input(
             "Cantidad de filas",
@@ -550,6 +587,9 @@ with st.sidebar:
         if st.button("Consulta personalizada", use_container_width=True):
             st.session_state.confirm_mode  = "custom"
             st.session_state.confirm_limit = int(st.session_state.sidebar_limit)
+        if st.button("Ultimas 10 horas", use_container_width=True):
+            st.session_state.confirm_mode  = "10h"
+            st.session_state.confirm_limit = 0
         if st.button("Ultimas 24 horas", use_container_width=True):
             st.session_state.confirm_mode  = "24h"
             st.session_state.confirm_limit = 0
@@ -638,6 +678,11 @@ if running:
             st.rerun(scope="app")
             return
 
+        if st.button("Detener cruce", type="primary", key="_stop_frag"):
+            _kill_pipeline()
+            st.rerun(scope="app")
+            return
+
         start_str = st.session_state.get("pipeline_start", "")
         elapsed = 0.0
         if start_str:
@@ -662,7 +707,9 @@ if running:
                 st.info(current)
 
             hint = ""
-            if "Axtract" in current and "completado" not in current:
+            if "Ejecutando" in current:
+                hint = _ORACLE_HINTS[int(elapsed / 15) % len(_ORACLE_HINTS)]
+            elif "Axtract" in current and "completado" not in current:
                 hint = _AXTRACT_HINTS[int(elapsed / 15) % len(_AXTRACT_HINTS)]
             elif "PNM" in current and "completado" not in current:
                 hint = _PNM_HINTS[int(elapsed / 15) % len(_PNM_HINTS)]

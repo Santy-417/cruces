@@ -95,8 +95,36 @@ WHERE S.ASSET_ID = A.ROW_ID(+)
 # Todos los activos — ROWNUM <= 1000 es el placeholder que main.py reemplaza
 INCIDENTS_QUERY = _BASE_SELECT
 
-# Solo incidentes actualizados en las últimas 24 horas
-INCIDENTS_QUERY_24H = _BASE_SELECT.replace(
-    "AND ROWNUM <= 1000",
-    "AND S.SR_STAT_DT > SYSDATE - (24/24) + (5/24)\n  AND ROWNUM <= 1000",
+# Ultimas ~10h Colombia — ALL_ROWS hint + SR_STAT_DT para performance
+INCIDENTS_QUERY_10H = (
+    _BASE_SELECT
+    .replace(
+        "SELECT\n    rownum fila,",
+        "SELECT\n/*+ ALL_ROWS */   rownum fila,",
+    )
+    .replace(
+        "S.ACT_OPEN_DT - (5/24) AS FECHA_DE_APERTURA,",
+        "S.SR_STAT_DT - (5/24) AS FECHA_DE_APERTURA,",
+    )
+    .replace(
+        "AND ROWNUM <= 1000",
+        "AND (S.SR_STAT_DT - (5/24)) > SYSDATE - (10/24)\n  AND ROWNUM <= 1000",
+    )
+)
+
+# Ultimas ~24h Colombia — misma formula con (24/24)
+INCIDENTS_QUERY_24H = (
+    _BASE_SELECT
+    .replace(
+        "SELECT\n    rownum fila,",
+        "SELECT\n/*+ ALL_ROWS */   rownum fila,",
+    )
+    .replace(
+        "S.ACT_OPEN_DT - (5/24) AS FECHA_DE_APERTURA,",
+        "S.SR_STAT_DT - (5/24) AS FECHA_DE_APERTURA,",
+    )
+    .replace(
+        "AND ROWNUM <= 1000",
+        "AND (S.SR_STAT_DT - (5/24)) > SYSDATE - (24/24)\n  AND ROWNUM <= 1000",
+    )
 )

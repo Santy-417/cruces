@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import requests
@@ -27,6 +28,8 @@ AXTRACT_COLUMNS = [
 ]
 
 _AXTRACT_FIELDS = '["cpeid","mode_props","metadata"]'
+_BATCH_SIZE = 50
+_MAX_WORKERS = 5
 
 
 def _parse_cdata(raw: str) -> list:
@@ -56,19 +59,19 @@ def _extract_fields(record: dict) -> dict:
                        else fttx_time)
 
     return {
-        "AXTRACT_ONT_STATUS":  ont.get("oper_status"),
-        "AXTRACT_TX_POWER":    fttx.get("tx_power"),
-        "AXTRACT_RX_POWER":    fttx.get("rx_power"),
-        "AXTRACT_RX_OLT_POWER": fttx.get("rx_olt_power"),
-        "AXTRACT_RANGING":     ont.get("ranging"),
-        "AXTRACT_SFP_TYPE":    ont.get("if_sfp"),
-        "AXTRACT_FTTX_TIME":   fttx_time_clean,
-        "AXTRACT_ALARM_CODE":  fttx_olt_info.get("last_down_cause"),
-        "AXTRACT_CMTS":        olt.get("id"),
-        "AXTRACT_CMTS_UP":     cmts_up,
-        "AXTRACT_ARPON":       topo.get("arpon"),
-        "AXTRACT_SPLITTER":    topo.get("splitter"),
-        "AXTRACT_NAP":         topo.get("nap"),
+        "AXTRACT_ONT_STATUS":       ont.get("oper_status"),
+        "AXTRACT_TX_POWER":         fttx.get("tx_power"),
+        "AXTRACT_RX_POWER":         fttx.get("rx_power"),
+        "AXTRACT_RX_OLT_POWER":     fttx.get("rx_olt_power"),
+        "AXTRACT_RANGING":          ont.get("ranging"),
+        "AXTRACT_SFP_TYPE":         ont.get("if_sfp"),
+        "AXTRACT_FTTX_TIME":        fttx_time_clean,
+        "AXTRACT_ALARM_CODE":       fttx_olt_info.get("last_down_cause"),
+        "AXTRACT_CMTS":             olt.get("id"),
+        "AXTRACT_CMTS_UP":          cmts_up,
+        "AXTRACT_ARPON":            topo.get("arpon"),
+        "AXTRACT_SPLITTER":         topo.get("splitter"),
+        "AXTRACT_NAP":              topo.get("nap"),
         "AXTRACT_PUERTO_NAP":       topo.get("puerto_nap"),
         "AXTRACT_TRANSCEIVER_TEMP": fttx.get("transceiver_temperature"),
         "REFERENCIA":               ont.get("equipment_id"),
@@ -84,39 +87,75 @@ def _is_gpon_cpeid(val) -> bool:
     s = str(val).strip()
     if not s or ":" in s:
         return False
-    # 12 hex chars sin colons = MAC HFC sin formatear → no es ONT serial
     return not _MAC_RAW_RE.match(s)
 
 
-def query_cpe(session: requests.Session, url: str, cpeid: str, timeout: int = 10) -> dict | None:
-    mongo_query = json.dumps({
-        "$or": [
-            {"cpeid": {"$regex": cpeid}},
-            {"metadata.ont.sn_raw": cpeid},
-        ]
-    })
+def _match_serial(record: dict, serial_set: set) -> str | None:
+    """Busca qué serial de entrada corresponde a un record devuelto por la API."""
+    sn_raw = ((record.get("metadata") or {}).get("ont") or {}).get("sn_raw", "")
+    if sn_raw in serial_set:
+        return sn_raw
+    cpeid = record.get("cpeid", "")
+    for s in serial_set:
+        if s and (s in cpeid or cpeid in s):
+            return s
+    return None
+
+
+def query_batch_axtract(
+    session: requests.Session, url: str, serials: list, timeout: int = 30
+) -> dict:
+    """Consulta hasta _BATCH_SIZE seriales ONT en una sola request.
+    Retorna {serial_input → record}."""
+    or_clauses = []
+    for s in serials:
+        or_clauses.append({"cpeid": {"$regex": s}})
+        or_clauses.append({"metadata.ont.sn_raw": s})
     body = {
         "args": {
             "store_name": "cpe_store",
-            "query": mongo_query,
+            "query": json.dumps({"$or": or_clauses}),
             "sort": '[["last_update", -1]]',
             "fields": _AXTRACT_FIELDS,
-            "limit": 1,
+            "limit": len(serials) * 2,
             "format": "json",
             "target": "",
         }
     }
+    serial_set = set(serials)
     try:
         resp = session.post(url, json=body, timeout=timeout)
         resp.raise_for_status()
         data = resp.json().get("return", {}).get("data", "")
         records = _parse_cdata(data)
-        return records[0] if records else None
+        result = {}
+        for record in records:
+            key = _match_serial(record, serial_set)
+            if key and key not in result:
+                result[key] = record
+        return result
     except requests.exceptions.Timeout:
-        log.warning("Axtract timeout para CPE %s", cpeid)
+        log.warning("Axtract timeout para lote de %d seriales", len(serials))
     except Exception as exc:
-        log.warning("Axtract error para CPE %s: %s", cpeid, exc)
-    return None
+        log.warning("Axtract error en lote: %s", exc)
+    return {}
+
+
+def _run_batch_axtract(
+    batch_serials: list, url: str, user: str, password: str
+) -> tuple[dict, list]:
+    """Ejecuta un lote Axtract en su propio hilo con su propia session.
+    Retorna (local_results, local_rows)."""
+    local_results: dict = {}
+    local_rows: list = []
+    session = requests.Session()
+    session.auth = HTTPBasicAuth(user, password)
+    record_map = query_batch_axtract(session, url, batch_serials)
+    for serial, record in record_map.items():
+        if serial not in local_results:
+            local_results[serial] = _extract_fields(record)
+            local_rows.append({"cpeid_consultado": serial, **record})
+    return local_results, local_rows
 
 
 def enrich_from_axtract(
@@ -126,24 +165,58 @@ def enrich_from_axtract(
     password: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = df.copy()
-    for col in AXTRACT_COLUMNS:
-        df[col] = pd.NA
 
-    session = requests.Session()
-    session.auth = HTTPBasicAuth(user, password)
+    gpon_mask = df["EQUIPO"].apply(_is_gpon_cpeid)
+    serials = (
+        df.loc[gpon_mask, "EQUIPO"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .unique()
+        .tolist()
+    )
 
-    raw_rows = []
-    for idx, row in df.iterrows():
-        cpeid = row.get("EQUIPO")
-        if not _is_gpon_cpeid(cpeid):
-            continue
-        record = query_cpe(session, url, str(cpeid).strip())
-        if record is None:
-            continue
-        fields = _extract_fields(record)
-        for col, val in fields.items():
-            df.at[idx, col] = val
-        raw_rows.append({"NRO_DE_INCIDENTE": row.get("NRO_DE_INCIDENTE"), "cpeid_consultado": cpeid, **record})
+    log.info("Axtract: %d seriales GPON a consultar en lotes de %d (workers=%d)",
+             len(serials), _BATCH_SIZE, _MAX_WORKERS)
+
+    serial_to_nro = (
+        df.loc[gpon_mask, ["EQUIPO", "NRO_DE_INCIDENTE"]]
+        .drop_duplicates("EQUIPO")
+        .set_index("EQUIPO")["NRO_DE_INCIDENTE"]
+        .to_dict()
+    )
+
+    batches = [serials[i:i + _BATCH_SIZE] for i in range(0, len(serials), _BATCH_SIZE)]
+    results: dict = {}
+    raw_rows: list = []
+
+    with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(batches) or 1)) as executor:
+        futures = {
+            executor.submit(_run_batch_axtract, b, url, user, password): b
+            for b in batches
+        }
+        for future in as_completed(futures):
+            local_results, local_rows = future.result()
+            results.update(local_results)
+            for row in local_rows:
+                raw_rows.append({
+                    "NRO_DE_INCIDENTE": serial_to_nro.get(row["cpeid_consultado"]),
+                    **row,
+                })
+
+    if results:
+        df_results = pd.DataFrame.from_records(
+            [{"_EQUIPO": k, **v} for k, v in results.items()]
+        )
+        drop_cols = [c for c in list(AXTRACT_COLUMNS) + ["REFERENCIA"] if c in df.columns]
+        df = df.drop(columns=drop_cols)
+        df = df.merge(df_results, left_on="EQUIPO", right_on="_EQUIPO", how="left")
+        df = df.drop(columns=["_EQUIPO"])
+    else:
+        for col in AXTRACT_COLUMNS:
+            df[col] = pd.NA
+        if "REFERENCIA" not in df.columns:
+            df["REFERENCIA"] = pd.NA
 
     df_axtract_raw = pd.DataFrame(raw_rows) if raw_rows else pd.DataFrame()
     return df, df_axtract_raw

@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import requests
@@ -22,6 +23,7 @@ PNM_COLUMNS = [
 _PNM_FIELDS = '["cpeid","mode_props","metadata"]'
 
 _BATCH_SIZE = 50
+_MAX_WORKERS = 5
 _MAX_CONSECUTIVE_ERRORS = 3
 
 
@@ -96,6 +98,32 @@ def query_batch(
     return None
 
 
+def _run_batch(batch: list, url: str, user: str, password: str) -> tuple[dict, list, bool]:
+    """Ejecuta un lote en su propio hilo con su propia session.
+    Retorna (local_fields, local_rows, is_error)."""
+    local_fields: dict = {}
+    local_rows: list = []
+    session = requests.Session()
+    session.auth = HTTPBasicAuth(user, password)
+    macs = [mac for _, mac, _ in batch]
+    try:
+        result_map = query_batch(session, url, macs)
+    except requests.exceptions.ConnectionError:
+        result_map = None
+    if result_map is None:
+        for _, mac, _ in batch:
+            local_fields[mac] = {col: pd.NA for col in PNM_COLUMNS}
+            local_fields[mac]["PNM_R"] = "Sin respuesta"
+        return local_fields, local_rows, True
+    for _, mac, nro in batch:
+        record = result_map.get(mac)
+        if record is None:
+            continue
+        local_fields[mac] = _extract_fields(record)
+        local_rows.append({"NRO_DE_INCIDENTE": nro, "mac_consultada": mac, **record})
+    return local_fields, local_rows, False
+
+
 def enrich_from_pnm(
     df: pd.DataFrame,
     url: str,
@@ -103,12 +131,6 @@ def enrich_from_pnm(
     password: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = df.copy()
-    for col in PNM_COLUMNS:
-        if col not in df.columns:
-            df[col] = pd.NA
-
-    session = requests.Session()
-    session.auth = HTTPBasicAuth(user, password)
 
     hfc_rows = []
     for idx, row in df.iterrows():
@@ -117,36 +139,41 @@ def enrich_from_pnm(
         if "COAXIAL" in tecnologia and _is_hfc_mac(mac):
             hfc_rows.append((idx, str(mac).strip(), row.get("NRO_DE_INCIDENTE")))
 
-    log.info("PNM: %d MACs HFC a consultar en lotes de %d", len(hfc_rows), _BATCH_SIZE)
+    log.info("PNM: %d MACs HFC a consultar en lotes de %d (workers=%d)",
+             len(hfc_rows), _BATCH_SIZE, _MAX_WORKERS)
 
-    raw_rows = []
+    batches = [hfc_rows[i:i + _BATCH_SIZE] for i in range(0, len(hfc_rows), _BATCH_SIZE)]
+    all_fields: dict = {}
+    raw_rows: list = []
     consecutive_errors = 0
-    for i in range(0, len(hfc_rows), _BATCH_SIZE):
-        if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
-            log.warning("PNM: %d errores de lote consecutivos — deteniendo", _MAX_CONSECUTIVE_ERRORS)
-            break
-        batch = hfc_rows[i:i + _BATCH_SIZE]
-        macs = [mac for _, mac, _ in batch]
-        try:
-            result_map = query_batch(session, url, macs)
-        except requests.exceptions.ConnectionError:
-            session = requests.Session()
-            session.auth = HTTPBasicAuth(user, password)
-            result_map = None
-        if result_map is None:
-            consecutive_errors += 1
-            for idx, mac, _ in batch:
-                df.at[idx, "PNM_R"] = "Sin respuesta"
-            continue
-        consecutive_errors = 0
-        for idx, mac, nro in batch:
-            record = result_map.get(mac)
-            if record is None:
-                continue
-            fields = _extract_fields(record)
-            for col, val in fields.items():
-                df.at[idx, col] = val
-            raw_rows.append({"NRO_DE_INCIDENTE": nro, "mac_consultada": mac, **record})
+
+    with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(batches) or 1)) as executor:
+        futures = {executor.submit(_run_batch, b, url, user, password): b for b in batches}
+        for future in as_completed(futures):
+            local_fields, local_rows, is_error = future.result()
+            if is_error:
+                consecutive_errors += 1
+                if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                    log.warning("PNM: demasiados errores — cancelando lotes restantes")
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+            else:
+                consecutive_errors = 0
+            all_fields.update(local_fields)
+            raw_rows.extend(local_rows)
+
+    if all_fields:
+        df_results = pd.DataFrame.from_records(
+            [{"_MAC": k, **v} for k, v in all_fields.items()]
+        )
+        drop_cols = [c for c in PNM_COLUMNS if c in df.columns]
+        df = df.drop(columns=drop_cols)
+        df = df.merge(df_results, left_on="MAC_CPE", right_on="_MAC", how="left")
+        df = df.drop(columns=["_MAC"])
+    else:
+        for col in PNM_COLUMNS:
+            if col not in df.columns:
+                df[col] = pd.NA
 
     df_pnm_raw = pd.DataFrame(raw_rows) if raw_rows else pd.DataFrame()
     return df, df_pnm_raw

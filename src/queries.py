@@ -128,3 +128,20 @@ INCIDENTS_QUERY_24H = (
         "AND (S.SR_STAT_DT - (5/24)) > SYSDATE - (24/24)\n  AND ROWNUM <= 1000",
     )
 )
+
+# Personalizada — ventana variable en horas; HOURS_PH se reemplaza en main.py
+INCIDENTS_QUERY_CUSTOM = (
+    _BASE_SELECT
+    .replace(
+        "SELECT\n    rownum fila,",
+        "SELECT\n/*+ ALL_ROWS */   rownum fila,",
+    )
+    .replace(
+        "S.ACT_OPEN_DT - (5/24) AS FECHA_DE_APERTURA,",
+        "S.SR_STAT_DT - (5/24) AS FECHA_DE_APERTURA,",
+    )
+    .replace(
+        "AND ROWNUM <= 1000",
+        "AND (S.SR_STAT_DT - (5/24)) > SYSDATE - (HOURS_PH/24)\n  AND ROWNUM <= 1000",
+    )
+)

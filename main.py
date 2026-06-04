@@ -38,8 +38,10 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="crucesmacros — Exportador de incidentes Siebel")
     parser.add_argument("--test-connection", action="store_true", help="Probar conexion sin ejecutar query")
     parser.add_argument("--limit", type=int, default=10, help="Maximo de filas a traer (0 = sin limite, default: 10)")
-    parser.add_argument("--mode", choices=["all", "10h", "24h"], default="all",
-                        help="all: todos los activos | 10h: ultimas 10h | 24h: ultimas 24h (default: all)")
+    parser.add_argument("--mode", choices=["all", "10h", "24h", "custom"], default="all",
+                        help="all: todos los activos | 10h: ultimas 10h | 24h: ultimas 24h | custom: horas variables (default: all)")
+    parser.add_argument("--hours", type=int, default=0,
+                        help="Horas para modo custom (1-24, default: 0 = no aplica)")
     parser.add_argument("--output", default=os.getenv("OUTPUT_DIR", "."), help="Directorio de salida del Excel")
     parser.add_argument("--skip-clean", action="store_true", help="Saltear limpieza de IDs (text_cleaner)")
     parser.add_argument("--skip-axtract", action="store_true", help="Saltear consulta a Axtract")
@@ -66,22 +68,28 @@ def test_connection():
     log.info("Conexion exitosa. SELECT 1 FROM DUAL: %s", row[0])
 
 
-def fetch_raw(limit: int = 10, mode: str = "all") -> pd.DataFrame:
+def fetch_raw(limit: int = 10, mode: str = "all", hours: int = 0) -> pd.DataFrame:
     from src.connection import get_connection
-    from src.queries import INCIDENTS_QUERY, INCIDENTS_QUERY_10H, INCIDENTS_QUERY_24H
+    from src.queries import INCIDENTS_QUERY, INCIDENTS_QUERY_10H, INCIDENTS_QUERY_24H, INCIDENTS_QUERY_CUSTOM
 
-    if mode == "10h":
-        base = INCIDENTS_QUERY_10H
-    elif mode == "24h":
-        base = INCIDENTS_QUERY_24H
+    if mode == "custom" and hours > 0:
+        query = (INCIDENTS_QUERY_CUSTOM
+                 .replace("HOURS_PH", str(hours))
+                 .replace("AND ROWNUM <= 1000", ""))
     else:
-        base = INCIDENTS_QUERY
+        if mode == "10h":
+            base = INCIDENTS_QUERY_10H
+        elif mode == "24h":
+            base = INCIDENTS_QUERY_24H
+        else:
+            base = INCIDENTS_QUERY
 
-    if limit > 0:
-        query = base.replace("AND ROWNUM <= 1000", f"AND ROWNUM <= {limit}")
-    else:
-        query = base.replace("AND ROWNUM <= 1000", "")
-    timeout_ms = 600_000 if mode in ("10h", "24h") else 120_000
+        if limit > 0:
+            query = base.replace("AND ROWNUM <= 1000", f"AND ROWNUM <= {limit}")
+        else:
+            query = base.replace("AND ROWNUM <= 1000", "")
+
+    timeout_ms = 600_000 if mode in ("10h", "24h", "custom") else 120_000
 
     log.info("Conectando a Oracle...")
     rows = []
@@ -90,7 +98,10 @@ def fetch_raw(limit: int = 10, mode: str = "all") -> pd.DataFrame:
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.callTimeout = timeout_ms
-        log.info("Ejecutando query (modo=%s, limite=%s)...", mode, limit if limit > 0 else "sin limite")
+        if mode == "custom" and hours > 0:
+            log.info("Ejecutando query (modo=%s, horas=%s)...", mode, hours)
+        else:
+            log.info("Ejecutando query (modo=%s, limite=%s)...", mode, limit if limit > 0 else "sin limite")
         log.info("Esperando respuesta de Oracle (mantener VPN activa)...")
         try:
             cursor.execute(query)
@@ -126,7 +137,7 @@ def run(args: argparse.Namespace):
     from src.text_cleaner import clean_ids
     from src.exporter import export_to_excel
 
-    df_raw = fetch_raw(limit=args.limit, mode=args.mode)
+    df_raw = fetch_raw(limit=args.limit, mode=args.mode, hours=args.hours)
 
     if df_raw.empty:
         log.info("No se encontraron incidentes activos. No se genera Excel.")
@@ -186,7 +197,8 @@ def run(args: argparse.Namespace):
             log.info("PNM: %d CMs encontrados", len(df_pnm_raw))
 
     username = os.getenv("DB_USER", "")
-    path = export_to_excel(df_exporte, df_consolidated, df_axtract_raw, df_pnm_raw, args.output, username)
+    path = export_to_excel(df_exporte, df_consolidated, df_axtract_raw, df_pnm_raw, args.output, username,
+                           mode=args.mode)
     log.info("Excel generado: %s", path)
 
 
@@ -207,6 +219,12 @@ def enrich_existing(args: argparse.Namespace):
     df_raw     = sheets.get("RAW",     pd.DataFrame())
     df_axtract = sheets.get("AXTRACT", pd.DataFrame())
     df_pnm     = sheets.get("PNM",     pd.DataFrame())
+
+    # Preservar modo de la hoja META
+    _meta_df = sheets.get("META", pd.DataFrame())
+    _existing_mode = ""
+    if not _meta_df.empty and "clave" in _meta_df.columns:
+        _existing_mode = _meta_df.set_index("clave")["valor"].to_dict().get("modo", "")
 
     # Revertir renombres de headers para recuperar columnas internas
     df_exporte = df_exporte.rename(columns={**REVERSE_PNM_RENAME, **REVERSE_AXTRACT_RENAME})
@@ -248,7 +266,7 @@ def enrich_existing(args: argparse.Namespace):
 
     log.info("Generando Excel...")
     path_out = export_to_excel(df_exporte, df_raw, df_axtract, df_pnm,
-                               output_dir, username, filepath=path)
+                               output_dir, username, filepath=path, mode=_existing_mode)
     log.info("Excel generado: %s", os.path.abspath(path_out))
 
 

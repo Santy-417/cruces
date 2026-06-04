@@ -219,6 +219,7 @@ def export_to_excel(
     output_dir: str,
     username: str = "",
     filepath: str | None = None,
+    mode: str = "",
 ) -> str:
     os.makedirs(output_dir, exist_ok=True)
 
@@ -272,5 +273,13 @@ def export_to_excel(
                     (len(str(c.value)) if c.value is not None else 0) for c in col_cells
                 )
                 ws_pnm.column_dimensions[col_cells[0].column_letter].width = min(max_len + 2, 50)
+
+        df_meta = pd.DataFrame([
+            {"clave": "modo",    "valor": mode},
+            {"clave": "usuario", "valor": username or ""},
+            {"clave": "fecha",   "valor": datetime.now().strftime("%Y-%m-%d %H:%M")},
+        ])
+        df_meta.to_excel(writer, sheet_name="META", index=False)
+        writer.sheets["META"].sheet_state = "hidden"
 
     return os.path.abspath(filepath)

@@ -72,7 +72,7 @@ def _on_pipeline_finished() -> None:
         except (FileNotFoundError, PermissionError):
             pass
     for key in ("pipeline_pid", "pipeline_start", "pipeline_mode",
-                "pipeline_limit", "pipeline_log", "pipeline_enrich_file",
+                "pipeline_hours", "pipeline_log", "pipeline_enrich_file",
                 "pipeline_skip_axtract", "pipeline_skip_pnm"):
         st.session_state.pop(key, None)
     _load_excel.clear()
@@ -95,20 +95,19 @@ def _kill_pipeline() -> None:
         except (FileNotFoundError, PermissionError):
             pass
     for key in ("pipeline_pid", "pipeline_start", "pipeline_mode",
-                "pipeline_limit", "pipeline_log", "pipeline_enrich_file",
+                "pipeline_hours", "pipeline_log", "pipeline_enrich_file",
                 "pipeline_skip_axtract", "pipeline_skip_pnm"):
         st.session_state.pop(key, None)
     _load_excel.clear()
 
 
-def _launch(mode: str, limit: int,
+def _launch(mode: str, hours: int = 0,
             skip_axtract: bool = False, skip_pnm: bool = False) -> None:
-    actual_mode = "all" if mode == "custom" else mode
     log_id   = uuid.uuid4().hex[:8]
     log_file = os.path.join(_BASE_DIR, f"crucesmacros_{log_id}.log")
-    cmd = [sys.executable, "main.py",
-           "--limit", str(limit), "--mode", actual_mode,
-           "--log-file", log_file]
+    cmd = [sys.executable, "main.py", "--mode", mode, "--log-file", log_file]
+    if hours > 0:
+        cmd += ["--hours", str(hours)]
     if skip_axtract:
         cmd.append("--skip-axtract")
     if skip_pnm:
@@ -122,7 +121,7 @@ def _launch(mode: str, limit: int,
         "pipeline_pid":           proc.pid,
         "pipeline_start":         datetime.now().isoformat(),
         "pipeline_mode":          mode,
-        "pipeline_limit":         limit,
+        "pipeline_hours":         hours,
         "pipeline_log":           log_file,
         "pipeline_skip_axtract":  skip_axtract,
         "pipeline_skip_pnm":      skip_pnm,
@@ -355,11 +354,9 @@ def _get_progress() -> list[str]:
 @st.dialog("Confirmar generacion de reporte")
 def _confirm_dialog():
     mode  = st.session_state.get("confirm_mode", "all")
-    limit = (int(st.session_state.get("sidebar_limit", 1000))
-             if mode == "custom"
-             else st.session_state.get("confirm_limit", 0))
+    hours = int(st.session_state.get("confirm_hours", 10)) if mode == "custom" else 0
     desc = {
-        "custom": f"Consulta personalizada — primeras **{limit:,}** filas activas",
+        "custom": f"Consulta personalizada — ultimas **{hours}** horas",
         "10h":    "Ultimas 10 horas — incidentes actualizados en las ultimas 10 h",
         "24h":    "Ultimas 24 horas — incidentes actualizados en las ultimas 24 h",
         "all":    "Consulta general — **todos** los incidentes activos (~15 min)",
@@ -378,16 +375,16 @@ def _confirm_dialog():
     with c1:
         if st.button("Confirmar", type="primary", use_container_width=True,
                      disabled=_already or (not inc_axtract and not inc_pnm)):
-            _launch(mode, limit,
+            _launch(mode, hours=hours,
                     skip_axtract=not inc_axtract,
                     skip_pnm=not inc_pnm)
             st.session_state.pop("confirm_mode",  None)
-            st.session_state.pop("confirm_limit", None)
+            st.session_state.pop("confirm_hours", None)
             st.rerun(scope="app")
     with c2:
         if st.button("Cancelar", use_container_width=True, disabled=_already):
             st.session_state.pop("confirm_mode",  None)
-            st.session_state.pop("confirm_limit", None)
+            st.session_state.pop("confirm_hours", None)
             st.rerun(scope="app")
 
 
@@ -547,11 +544,11 @@ with st.sidebar:
     if running:
         info  = st.session_state
         mode  = info.get("pipeline_mode", "")
+        _hrs  = info.get("pipeline_hours", 0)
         mlbl  = {"all": "General", "10h": "Ultimas 10h", "24h": "Ultimas 24h",
-                 "custom": "Personalizada",
+                 "custom": f"Personalizada ({_hrs}h)" if _hrs else "Personalizada",
                  "enrich_axtract": "Enriq. GPON", "enrich_pnm": "Enriq. HFC"}.get(mode, mode)
-        llbl  = (f"{info.get('pipeline_limit', 0):,} filas"
-                 if info.get("pipeline_limit", 0) > 0 else "")
+        llbl  = f"{_hrs}h" if mode == "custom" and _hrs else ""
         msg   = f"**Modo:** {mlbl}"
         if llbl:
             msg += f"  \n**Limite:** {llbl}"
@@ -571,22 +568,22 @@ with st.sidebar:
         if st.button("Detener cruce", type="primary", use_container_width=True, key="_stop_sidebar"):
             _kill_pipeline()
             st.rerun(scope="app")
-        st.number_input("Cantidad de filas", value=1000, disabled=True, key="_dlimit")
+        st.number_input("Horas", value=10, disabled=True, key="_dlimit")
         st.button("Consulta personalizada", disabled=True, key="_db1")
         st.button("Ultimas 10 horas",       disabled=True, key="_db2")
         st.button("Ultimas 24 horas",       disabled=True, key="_db3")
         st.button("Consulta general",        disabled=True, key="_db4")
     else:
         st.number_input(
-            "Cantidad de filas",
-            min_value=1, max_value=50_000,
-            value=1_000, step=500,
-            key="sidebar_limit",
+            "Horas",
+            min_value=1, max_value=24,
+            value=10, step=1,
+            key="sidebar_hours",
             help="Solo aplica al boton 'Consulta personalizada'.",
         )
         if st.button("Consulta personalizada", use_container_width=True):
             st.session_state.confirm_mode  = "custom"
-            st.session_state.confirm_limit = int(st.session_state.sidebar_limit)
+            st.session_state.confirm_hours = int(st.session_state.sidebar_hours)
         if st.button("Ultimas 10 horas", use_container_width=True):
             st.session_state.confirm_mode  = "10h"
             st.session_state.confirm_limit = 0
@@ -603,6 +600,15 @@ with st.sidebar:
         mod_dt = datetime.fromtimestamp(os.path.getmtime(excel_path))
         st.caption(f"Archivo: **{os.path.basename(excel_path)}**")
         st.caption(f"Generado: {mod_dt.strftime('%d/%m/%Y %H:%M')}")
+        _meta_df = sheets.get("META", pd.DataFrame()) if sheets else pd.DataFrame()
+        _meta = {}
+        if not _meta_df.empty and "clave" in _meta_df.columns:
+            _meta = _meta_df.set_index("clave")["valor"].to_dict()
+        _modo_lbl = {"all": "General", "10h": "10h", "24h": "24h",
+                     "custom": "Personalizada"}.get(_meta.get("modo", ""), _meta.get("modo", "—") or "—")
+        _user_lbl = _meta.get("usuario") or "—"
+        st.caption(f"Consulta: **{_modo_lbl}**")
+        st.caption(f"Usuario: **{_user_lbl}**")
         if not running:
             st.divider()
             with open(excel_path, "rb") as fh:

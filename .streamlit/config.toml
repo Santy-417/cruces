@@ -1,2 +1,6 @@
 [server]
 port = 3233
+baseUrlPath = "cruces"
+
+[browser]
+gatherUsageStats = false

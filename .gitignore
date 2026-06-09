@@ -41,5 +41,5 @@ ENV/
 skills-lock.json
 
 /packages
-activity_log.csv
+Logsusers/
 active_query.json

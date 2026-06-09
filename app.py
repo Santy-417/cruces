@@ -29,7 +29,7 @@ _BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
 _WIN          = sys.platform == "win32"
 _API_LOGIN    = os.getenv("AUTH_API_URL", "")
 _LOCK_FILE    = os.path.join(_BASE_DIR, "active_query.json")
-_ACTIVITY_LOG = os.path.join(_BASE_DIR, "activity_log.csv")
+_ACTIVITY_LOG = os.path.join(_BASE_DIR, "Logsusers", "activity_log.csv")
 
 st.set_page_config(page_title="Crucesmacros — Visor", layout="wide")
 
@@ -76,7 +76,12 @@ def _on_pipeline_finished() -> None:
     try:
         start_dt2    = datetime.fromisoformat(start_str)
         duration_s   = (datetime.now() - start_dt2).total_seconds()
-        _log_activity(st.session_state.get("username", ""), mode, duration_s)
+        _log_mode = mode
+        if mode == "custom":
+            _hrs = st.session_state.get("pipeline_hours", 0)
+            if _hrs:
+                _log_mode = f"custom_{_hrs}h"
+        _log_activity(st.session_state.get("username", ""), _log_mode, duration_s)
     except Exception:
         pass
     # Limpiar log temporal
@@ -135,7 +140,7 @@ def _launch(mode: str, hours: int = 0,
     if _WIN:
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     proc = subprocess.Popen(cmd, **kwargs)
-    _global_lock_write(proc.pid, _username, mode)
+    _global_lock_write(proc.pid, _username, mode, hours)
     st.session_state.update({
         "pipeline_pid":           proc.pid,
         "pipeline_start":         datetime.now().isoformat(),
@@ -184,21 +189,87 @@ def _authenticate(username: str, password: str) -> bool:
 
 
 def _login_page() -> None:
-    st.title("Crucesmacros")
-    st.markdown("Ingresa tus credenciales corporativas para continuar.")
-    with st.form("login_form"):
-        username = st.text_input("Usuario")
-        password = st.text_input("Contraseña", type="password")
-        submitted = st.form_submit_button("Ingresar", use_container_width=True, type="primary")
-    if submitted:
-        if not username or not password:
-            st.error("Ingresa usuario y contraseña.")
-        elif _authenticate(username, password):
-            st.session_state["logged_in"] = True
-            st.session_state["username"]  = username
+    st.markdown("""
+    <style>
+    header[data-testid="stHeader"] { display: none; }
+    #MainMenu, footer { visibility: hidden; }
+    .stApp { background-color: #0f0f0f; }
+    .login-card {
+        background: #1a1a1a;
+        border: 1px solid #2a2a2a;
+        border-radius: 12px;
+        padding: 2.5rem 2rem 1.5rem 2rem;
+        margin-top: 6vh;
+    }
+    .login-title {
+        color: #ffffff;
+        font-size: 1.35rem;
+        font-weight: 600;
+        text-align: center;
+        margin-bottom: 1.6rem;
+        letter-spacing: 0.01em;
+    }
+    @keyframes btn-loading {
+        0%, 100% { opacity: 1; }
+        50%       { opacity: 0.45; }
+    }
+    button:disabled {
+        animation: btn-loading 1.1s ease-in-out infinite !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    is_authing = st.session_state.get("_authing", False)
+
+    _, col, _ = st.columns([1, 1.1, 1])
+    with col:
+        st.markdown('<div class="login-card">', unsafe_allow_html=True)
+        st.markdown('<p class="login-title"> Crucesmacros</p>', unsafe_allow_html=True)
+        with st.form("login_form"):
+            st.text_input("Usuario",    placeholder="Usuario",    label_visibility="collapsed",
+                          key="_login_user", disabled=is_authing)
+            st.text_input("Contraseña", placeholder="Contraseña", label_visibility="collapsed",
+                          type="password", key="_login_pass", disabled=is_authing)
+            submitted = st.form_submit_button(
+                "Verificando..." if is_authing else "Ingresar",
+                use_container_width=True, type="primary", disabled=is_authing,
+            )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    if submitted and not is_authing:
+        _user = st.session_state.get("_login_user", "")
+        _pass = st.session_state.get("_login_pass", "")
+        if not _user or not _pass:
+            _, col2, _ = st.columns([1, 1.1, 1])
+            with col2:
+                st.error("Ingresa usuario y contraseña.")
+        else:
+            st.session_state["_authing"] = True
+            st.rerun()
+
+    if is_authing:
+        _user = st.session_state.get("_login_user", "")
+        _pass = st.session_state.get("_login_pass", "")
+        _t0 = datetime.now()
+        ok = _authenticate(_user, _pass)
+        _auth_s = (datetime.now() - _t0).total_seconds()
+        st.session_state.pop("_authing",    None)
+        st.session_state.pop("_login_pass", None)
+        if ok:
+            _log_activity(_user, "login", _auth_s)
+            st.session_state["logged_in"]    = True
+            st.session_state["username"]     = _user
+            st.session_state["show_welcome"] = True
             st.rerun()
         else:
+            st.session_state["_login_error"] = True
+            st.rerun()
+
+    if st.session_state.pop("_login_error", False):
+        _, col2, _ = st.columns([1, 1.1, 1])
+        with col2:
             st.error("Credenciales incorrectas o sin acceso.")
+
 
 
 # ── Global lock (bloqueo entre sesiones) ──────────────────────────────────────
@@ -215,13 +286,14 @@ def _global_lock_read() -> "dict | None":
         return None
 
 
-def _global_lock_write(pid: int, username: str, mode: str) -> None:
+def _global_lock_write(pid: int, username: str, mode: str, hours: int = 0) -> None:
     try:
         with open(_LOCK_FILE, "w", encoding="utf-8") as f:
             json.dump({
                 "pid":        pid,
                 "username":   username,
                 "mode":       mode,
+                "hours":      hours,
                 "started_at": datetime.now().isoformat(),
             }, f)
     except OSError:
@@ -244,6 +316,7 @@ def _log_activity(username: str, mode: str, duration_s: float) -> None:
         "modo":        mode,
         "duracion_s":  round(duration_s, 1),
     }
+    os.makedirs(os.path.dirname(_ACTIVITY_LOG), exist_ok=True)
     file_exists = os.path.exists(_ACTIVITY_LOG)
     try:
         with open(_ACTIVITY_LOG, "a", newline="", encoding="utf-8") as f:
@@ -631,6 +704,9 @@ if not st.session_state.get("logged_in"):
 
 # ── Estado de la sesión ───────────────────────────────────────────────────────
 
+if st.session_state.pop("show_welcome", False):
+    st.toast(f"Bienvenido, {st.session_state.get('username', '')}", icon="✅")
+
 running     = _is_running()
 global_lock = _global_lock_read()
 _other_running = (
@@ -695,8 +771,10 @@ with st.sidebar:
         st.button("Consulta general",        disabled=True, key="_db4")
     elif _other_running:
         _lock_user = global_lock.get("username", "Otro usuario")
-        _lock_mode = {"all": "General", "10h": "10h", "24h": "24h",
-                      "custom": "Personalizada"}.get(global_lock.get("mode", ""), "—")
+        _lock_h    = global_lock.get("hours", 0)
+        _lock_mode = {"all": "General", "10h": "Ultimas 10h", "24h": "Ultimas 24h",
+                      "custom": f"Personalizada ({_lock_h}h)" if _lock_h else "Personalizada"
+                     }.get(global_lock.get("mode", ""), "—")
         st.warning(f"**{_lock_user}** esta ejecutando una consulta ({_lock_mode}).  \nPor favor espera.")
         st.number_input("Horas", value=10, disabled=True, key="_dlimit")
         st.button("Consulta personalizada", disabled=True, key="_db1")
@@ -870,6 +948,32 @@ if running:
 
 else:
     # ── Visor normal ──────────────────────────────────────────────────────────
+
+    if _other_running:
+        @st.fragment(run_every=5)
+        def _waiting_area() -> None:
+            lock = _global_lock_read()
+            if lock is None:
+                st.toast("Ya puedes iniciar una nueva consulta.", icon="✅")
+                st.rerun(scope="app")
+                return
+            _lu  = lock.get("username", "Otro usuario")
+            _lm  = lock.get("mode", "")
+            _lh  = lock.get("hours", 0)
+            _lbl = {"all": "General", "10h": "Ultimas 10h", "24h": "Ultimas 24h",
+                    "custom": f"Personalizada ({_lh}h)" if _lh else "Personalizada"
+                   }.get(_lm, _lm)
+            elapsed = 0.0
+            try:
+                elapsed = (datetime.now() - datetime.fromisoformat(lock.get("started_at", ""))).total_seconds()
+            except Exception:
+                pass
+            m_el, s_el = divmod(int(elapsed), 60)
+            st.info(
+                f"**{_lu}** esta ejecutando una consulta ({_lbl}) — {m_el}m {s_el}s  \n"
+                "Verificando disponibilidad cada 5 segundos..."
+            )
+        _waiting_area()
 
     if sheets is None:
         st.title("Crucesmacros — Visor")

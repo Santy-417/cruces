@@ -105,7 +105,7 @@ def _launch(mode: str, hours: int = 0,
             skip_axtract: bool = False, skip_pnm: bool = False) -> None:
     log_id   = uuid.uuid4().hex[:8]
     log_file = os.path.join(_BASE_DIR, f"crucesmacros_{log_id}.log")
-    cmd = [sys.executable, "main.py", "--mode", mode, "--log-file", log_file]
+    cmd = [sys.executable, "main.py", "--mode", mode, "--limit", "0", "--log-file", log_file]
     if hours > 0:
         cmd += ["--hours", str(hours)]
     if skip_axtract:
@@ -581,16 +581,16 @@ with st.sidebar:
             key="sidebar_hours",
             help="Solo aplica al boton 'Consulta personalizada'.",
         )
-        if st.button("Consulta personalizada", use_container_width=True):
+        if st.button("Consulta personalizada", use_container_width=True, key="btn_custom"):
             st.session_state.confirm_mode  = "custom"
             st.session_state.confirm_hours = int(st.session_state.sidebar_hours)
-        if st.button("Ultimas 10 horas", use_container_width=True):
+        if st.button("Ultimas 10 horas", use_container_width=True, key="btn_10h"):
             st.session_state.confirm_mode  = "10h"
             st.session_state.confirm_limit = 0
-        if st.button("Ultimas 24 horas", use_container_width=True):
+        if st.button("Ultimas 24 horas", use_container_width=True, key="btn_24h"):
             st.session_state.confirm_mode  = "24h"
             st.session_state.confirm_limit = 0
-        if st.button("Consulta general", use_container_width=True):
+        if st.button("Consulta general", use_container_width=True, key="btn_all"):
             st.session_state.confirm_mode  = "all"
             st.session_state.confirm_limit = 0
 

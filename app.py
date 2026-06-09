@@ -4,6 +4,8 @@ Fase 1: visor con filtros y colores.
 Fase 2: botones Generar + progreso en tiempo real + multi-usuario.
 """
 
+import csv
+import json
 import os
 import re
 import subprocess
@@ -14,6 +16,7 @@ from glob import glob
 
 import pandas as pd
 import psutil
+import requests
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -21,9 +24,12 @@ load_dotenv()
 
 pd.set_option("styler.render.max_elements", 2_000_000)
 
-OUTPUT_DIR = os.getenv("OUTPUT_DIR", ".")
-_BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
-_WIN       = sys.platform == "win32"
+OUTPUT_DIR    = os.getenv("OUTPUT_DIR", ".")
+_BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
+_WIN          = sys.platform == "win32"
+_API_LOGIN    = os.getenv("AUTH_API_URL", "")
+_LOCK_FILE    = os.path.join(_BASE_DIR, "active_query.json")
+_ACTIVITY_LOG = os.path.join(_BASE_DIR, "activity_log.csv")
 
 st.set_page_config(page_title="Crucesmacros — Visor", layout="wide")
 
@@ -65,6 +71,14 @@ def _on_pipeline_finished() -> None:
         skip_pnm = st.session_state.get("pipeline_skip_pnm",     False)
         st.session_state["last_has_axtract"] = not skip_ax
         st.session_state["last_has_pnm"]     = not skip_pnm
+    # Registrar actividad
+    _global_lock_clear()
+    try:
+        start_dt2    = datetime.fromisoformat(start_str)
+        duration_s   = (datetime.now() - start_dt2).total_seconds()
+        _log_activity(st.session_state.get("username", ""), mode, duration_s)
+    except Exception:
+        pass
     # Limpiar log temporal
     if log_file and log_file != "crucesmacros.log":
         try:
@@ -88,6 +102,7 @@ def _kill_pipeline() -> None:
             proc.wait(timeout=5)
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
             pass
+    _global_lock_clear()
     log_file = st.session_state.get("pipeline_log", "")
     if log_file and log_file != "crucesmacros.log":
         try:
@@ -105,9 +120,12 @@ def _launch(mode: str, hours: int = 0,
             skip_axtract: bool = False, skip_pnm: bool = False) -> None:
     log_id   = uuid.uuid4().hex[:8]
     log_file = os.path.join(_BASE_DIR, f"crucesmacros_{log_id}.log")
+    _username = st.session_state.get("username", "")
     cmd = [sys.executable, "main.py", "--mode", mode, "--limit", "0", "--log-file", log_file]
     if hours > 0:
         cmd += ["--hours", str(hours)]
+    if _username:
+        cmd += ["--user", _username]
     if skip_axtract:
         cmd.append("--skip-axtract")
     if skip_pnm:
@@ -117,6 +135,7 @@ def _launch(mode: str, hours: int = 0,
     if _WIN:
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     proc = subprocess.Popen(cmd, **kwargs)
+    _global_lock_write(proc.pid, _username, mode)
     st.session_state.update({
         "pipeline_pid":           proc.pid,
         "pipeline_start":         datetime.now().isoformat(),
@@ -146,6 +165,94 @@ def _launch_enrich(which: str, file_path: str) -> None:
         "pipeline_log":          log_file,
         "pipeline_enrich_file":  file_path,
     })
+
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+
+def _authenticate(username: str, password: str) -> bool:
+    if not _API_LOGIN:
+        return False
+    try:
+        r = requests.post(
+            _API_LOGIN,
+            json={"username": username, "password": password},
+            timeout=10,
+        )
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _login_page() -> None:
+    st.title("Crucesmacros")
+    st.markdown("Ingresa tus credenciales corporativas para continuar.")
+    with st.form("login_form"):
+        username = st.text_input("Usuario")
+        password = st.text_input("Contraseña", type="password")
+        submitted = st.form_submit_button("Ingresar", use_container_width=True, type="primary")
+    if submitted:
+        if not username or not password:
+            st.error("Ingresa usuario y contraseña.")
+        elif _authenticate(username, password):
+            st.session_state["logged_in"] = True
+            st.session_state["username"]  = username
+            st.rerun()
+        else:
+            st.error("Credenciales incorrectas o sin acceso.")
+
+
+# ── Global lock (bloqueo entre sesiones) ──────────────────────────────────────
+
+def _global_lock_read() -> "dict | None":
+    try:
+        with open(_LOCK_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if not psutil.pid_exists(data.get("pid", -1)):
+            _global_lock_clear()
+            return None
+        return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _global_lock_write(pid: int, username: str, mode: str) -> None:
+    try:
+        with open(_LOCK_FILE, "w", encoding="utf-8") as f:
+            json.dump({
+                "pid":        pid,
+                "username":   username,
+                "mode":       mode,
+                "started_at": datetime.now().isoformat(),
+            }, f)
+    except OSError:
+        pass
+
+
+def _global_lock_clear() -> None:
+    try:
+        os.remove(_LOCK_FILE)
+    except (FileNotFoundError, OSError):
+        pass
+
+
+# ── Activity log ──────────────────────────────────────────────────────────────
+
+def _log_activity(username: str, mode: str, duration_s: float) -> None:
+    row = {
+        "fecha":       datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "usuario":     username,
+        "modo":        mode,
+        "duracion_s":  round(duration_s, 1),
+    }
+    file_exists = os.path.exists(_ACTIVITY_LOG)
+    try:
+        with open(_ACTIVITY_LOG, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=row.keys())
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(row)
+    except OSError:
+        pass
 
 
 # ── Progress parsing ──────────────────────────────────────────────────────────
@@ -516,9 +623,20 @@ def _text_filter(df: pd.DataFrame, q: str) -> pd.DataFrame:
     return df[mask]
 
 
+# ── Guard de sesión ───────────────────────────────────────────────────────────
+
+if not st.session_state.get("logged_in"):
+    _login_page()
+    st.stop()
+
 # ── Estado de la sesión ───────────────────────────────────────────────────────
 
-running = _is_running()
+running     = _is_running()
+global_lock = _global_lock_read()
+_other_running = (
+    global_lock is not None
+    and global_lock.get("pid") != st.session_state.get("pipeline_pid")
+)
 
 # Si ya hay pipeline activo, limpiar cualquier estado de diálogo pendiente
 # para evitar que el diálogo reaparezca en el siguiente rerun
@@ -539,6 +657,8 @@ _target_excel  = (_session_excel
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
+    _logged_user = st.session_state.get("username", "")
+    st.caption(f"Usuario: **{_logged_user}**")
     st.subheader("Generar reporte")
 
     if running:
@@ -573,6 +693,16 @@ with st.sidebar:
         st.button("Ultimas 10 horas",       disabled=True, key="_db2")
         st.button("Ultimas 24 horas",       disabled=True, key="_db3")
         st.button("Consulta general",        disabled=True, key="_db4")
+    elif _other_running:
+        _lock_user = global_lock.get("username", "Otro usuario")
+        _lock_mode = {"all": "General", "10h": "10h", "24h": "24h",
+                      "custom": "Personalizada"}.get(global_lock.get("mode", ""), "—")
+        st.warning(f"**{_lock_user}** esta ejecutando una consulta ({_lock_mode}).  \nPor favor espera.")
+        st.number_input("Horas", value=10, disabled=True, key="_dlimit")
+        st.button("Consulta personalizada", disabled=True, key="_db1")
+        st.button("Ultimas 10 horas",       disabled=True, key="_db2")
+        st.button("Ultimas 24 horas",       disabled=True, key="_db3")
+        st.button("Consulta general",       disabled=True, key="_db4")
     else:
         st.number_input(
             "Horas",
@@ -646,6 +776,11 @@ with st.sidebar:
                 if st.button("Enriquecer HFC (PNM)", use_container_width=True, key="btn_enrich_pnm"):
                     st.session_state["enrich_mode"] = "pnm"
                     st.session_state["enrich_file"] = _target_excel
+
+    st.divider()
+    if st.button("Cerrar sesion", use_container_width=True, key="btn_logout"):
+        st.session_state.clear()
+        st.rerun()
 
 
 # Dialogs fuera del sidebar para que se rendericen a nivel de pagina

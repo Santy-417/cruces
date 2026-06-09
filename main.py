@@ -48,6 +48,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-pnm", action="store_true", help="Saltear consulta a PNM")
     parser.add_argument("--log-file", default="crucesmacros.log",
                         help="Archivo de log (default: crucesmacros.log)")
+    parser.add_argument("--user", default="",
+                        help="Usuario que ejecuta la consulta (para nombre de archivo y META)")
     parser.add_argument("--enrich", choices=["axtract", "pnm"],
                         help="Enriquecer Excel existente sin consultar Oracle (requiere --file)")
     parser.add_argument("--file", default=None,
@@ -196,7 +198,7 @@ def run(args: argparse.Namespace):
             )
             log.info("PNM: %d CMs encontrados", len(df_pnm_raw))
 
-    username = os.getenv("DB_USER", "")
+    username = args.user or os.getenv("DB_USER", "")
     path = export_to_excel(df_exporte, df_consolidated, df_axtract_raw, df_pnm_raw, args.output, username,
                            mode=args.mode)
     log.info("Excel generado: %s", path)

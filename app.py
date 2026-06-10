@@ -31,7 +31,7 @@ _API_LOGIN    = os.getenv("AUTH_API_URL", "")
 _LOCK_FILE    = os.path.join(_BASE_DIR, "active_query.json")
 _ACTIVITY_LOG = os.path.join(_BASE_DIR, "Logsusers", "activity_log.csv")
 
-st.set_page_config(page_title="Crucesmacros — Visor", layout="wide")
+st.set_page_config(page_title="Crucesmacros", layout="wide")
 
 
 # ── Pipeline control ──────────────────────────────────────────────────────────
@@ -194,20 +194,22 @@ def _login_page() -> None:
     header[data-testid="stHeader"] { display: none; }
     #MainMenu, footer { visibility: hidden; }
     .stApp { background-color: #0f0f0f; }
-    .login-card {
-        background: #1a1a1a;
-        border: 1px solid #2a2a2a;
-        border-radius: 12px;
-        padding: 2.5rem 2rem 1.5rem 2rem;
-        margin-top: 6vh;
-    }
     .login-title {
         color: #ffffff;
-        font-size: 1.35rem;
-        font-weight: 600;
+        font-size: 2.8rem;
+        font-weight: 800;
         text-align: center;
-        margin-bottom: 1.6rem;
-        letter-spacing: 0.01em;
+        margin-bottom: 1rem;
+        letter-spacing: 0.02em;
+        width: 100%;
+        display: block;
+    }
+    [data-testid="stForm"] {
+        background: #1a1a1a;
+        border: 1px solid #2a2a2a !important;
+        border-radius: 12px;
+        padding: 2rem 2rem 1.5rem 2rem;
+        margin-top: 6vh;
     }
     @keyframes btn-loading {
         0%, 100% { opacity: 1; }
@@ -223,9 +225,8 @@ def _login_page() -> None:
 
     _, col, _ = st.columns([1, 1.1, 1])
     with col:
-        st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        st.markdown('<p class="login-title"> Crucesmacros</p>', unsafe_allow_html=True)
         with st.form("login_form"):
+            st.markdown('<p style="font-size:2.8rem;font-weight:800;color:#ffffff;text-align:center;margin:0 0 1rem 0;letter-spacing:0.02em;"> Crucesmacros</p>', unsafe_allow_html=True)
             st.text_input("Usuario",    placeholder="Usuario",    label_visibility="collapsed",
                           key="_login_user", disabled=is_authing)
             st.text_input("Contraseña", placeholder="Contraseña", label_visibility="collapsed",
@@ -234,7 +235,6 @@ def _login_page() -> None:
                 "Verificando..." if is_authing else "Ingresar",
                 use_container_width=True, type="primary", disabled=is_authing,
             )
-        st.markdown('</div>', unsafe_allow_html=True)
 
     if submitted and not is_authing:
         _user = st.session_state.get("_login_user", "")
@@ -976,7 +976,7 @@ else:
         _waiting_area()
 
     if sheets is None:
-        st.title("Crucesmacros — Visor")
+        st.title("Crucesmacros")
         st.warning(f"No se encontro ningun archivo Excel en `{OUTPUT_DIR}`.")
         st.info("Usa el panel izquierdo para generar el reporte.")
         st.stop()

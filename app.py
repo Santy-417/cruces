@@ -1,4 +1,4 @@
-"""
+﻿"""
 crucesmacros — Visor Streamlit (Fase 2)
 Fase 1: visor con filtros y colores.
 Fase 2: botones Generar + progreso en tiempo real + multi-usuario.
@@ -30,6 +30,7 @@ _WIN          = sys.platform == "win32"
 _API_LOGIN    = os.getenv("AUTH_API_URL", "")
 _LOCK_FILE    = os.path.join(_BASE_DIR, "active_query.json")
 _ACTIVITY_LOG = os.path.join(_BASE_DIR, "Logsusers", "activity_log.csv")
+_STATS_USERS  = {u.strip() for u in os.getenv("STATS_USERS", "").split(",") if u.strip()}
 
 st.set_page_config(page_title="Crucesmacros", layout="wide")
 
@@ -233,7 +234,7 @@ def _login_page() -> None:
                           type="password", key="_login_pass", disabled=is_authing)
             submitted = st.form_submit_button(
                 "Verificando..." if is_authing else "Ingresar",
-                use_container_width=True, type="primary", disabled=is_authing,
+                width="stretch", type="primary", disabled=is_authing,
             )
 
     if submitted and not is_authing:
@@ -270,6 +271,69 @@ def _login_page() -> None:
         with col2:
             st.error("Credenciales incorrectas o sin acceso.")
 
+
+
+# ── Panel de estadísticas ────────────────────────────────────────────────────
+
+def _stats_page() -> None:
+    st.title("Estadísticas de uso")
+    if not os.path.exists(_ACTIVITY_LOG):
+        st.info("No hay registros de actividad aún.")
+        return
+    df = pd.read_csv(_ACTIVITY_LOG, parse_dates=["fecha"])
+    consultas = df[df["modo"] != "login"]
+    hoy = datetime.now().date()
+    consultas_hoy = int((consultas["fecha"].dt.date == hoy).sum()) if len(consultas) else 0
+    c1, c2 = st.columns(2)
+    c1.metric("Total consultas", len(consultas))
+    c2.metric("Consultas hoy",   consultas_hoy)
+    st.divider()
+    st.subheader("Resumen por usuario")
+    if len(consultas):
+        _base = (
+            consultas.groupby("usuario")
+            .agg(total=("modo", "count"), ultima=("fecha", "max"))
+            .reset_index()
+        )
+        _ultimo_modo = (
+            consultas.sort_values("fecha")
+            .groupby("usuario")["modo"].last()
+            .reset_index()
+            .rename(columns={"modo": "ultimo_modo"})
+        )
+        resumen = (
+            _base.merge(_ultimo_modo, on="usuario")
+            .sort_values("total", ascending=False)
+            .rename(columns={"usuario": "Usuario", "total": "Consultas",
+                              "ultima": "Última consulta", "ultimo_modo": "Último modo"})
+        )
+        st.dataframe(resumen, width="stretch", hide_index=True)
+    else:
+        st.info("Sin consultas registradas aún.")
+    st.divider()
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.subheader("Por usuario")
+        st.bar_chart(consultas.groupby("usuario").size())
+    with col_b:
+        st.subheader("Por modo")
+        st.bar_chart(consultas.groupby("modo").size())
+    st.subheader("Actividad por día")
+    df["dia"] = df["fecha"].dt.date
+    st.line_chart(df.groupby("dia").size())
+    st.divider()
+    st.subheader("Detalle")
+    usuarios = ["Todos"] + sorted(df["usuario"].unique().tolist())
+    filtro = st.selectbox("Filtrar por usuario", usuarios)
+    df_show = df if filtro == "Todos" else df[df["usuario"] == filtro]
+    def _fmt_dur(s):
+        s = int(round(float(s))) if pd.notna(s) else 0
+        return f"{s}s" if s < 60 else f"{s // 60}m {s % 60}s"
+
+    df_show = df_show.copy()
+    df_show["duracion"] = df_show["duracion_s"].apply(_fmt_dur)
+    df_show = df_show.drop(columns=["duracion_s"])
+    st.dataframe(df_show.sort_values("fecha", ascending=False), width="stretch")
 
 
 # ── Global lock (bloqueo entre sesiones) ──────────────────────────────────────
@@ -553,7 +617,7 @@ def _confirm_dialog():
     if not inc_axtract and not inc_pnm:
         st.error("Debes seleccionar al menos una tecnologia (GPON o HFC) para generar el reporte.")
     with c1:
-        if st.button("Confirmar", type="primary", use_container_width=True,
+        if st.button("Confirmar", type="primary", width="stretch",
                      disabled=_already or (not inc_axtract and not inc_pnm)):
             _launch(mode, hours=hours,
                     skip_axtract=not inc_axtract,
@@ -562,7 +626,7 @@ def _confirm_dialog():
             st.session_state.pop("confirm_hours", None)
             st.rerun(scope="app")
     with c2:
-        if st.button("Cancelar", use_container_width=True, disabled=_already):
+        if st.button("Cancelar", width="stretch", disabled=_already):
             st.session_state.pop("confirm_mode",  None)
             st.session_state.pop("confirm_hours", None)
             st.rerun(scope="app")
@@ -582,13 +646,13 @@ def _confirm_enrich_dialog():
     _already = st.session_state.get("pipeline_pid") is not None
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Confirmar", type="primary", use_container_width=True, disabled=_already):
+        if st.button("Confirmar", type="primary", width="stretch", disabled=_already):
             _launch_enrich(which, fpath)
             st.session_state.pop("enrich_mode", None)
             st.session_state.pop("enrich_file", None)
             st.rerun(scope="app")
     with c2:
-        if st.button("Cancelar", use_container_width=True, disabled=_already):
+        if st.button("Cancelar", width="stretch", disabled=_already):
             st.session_state.pop("enrich_mode", None)
             st.session_state.pop("enrich_file", None)
             st.rerun(scope="app")
@@ -761,7 +825,7 @@ with st.sidebar:
                 datos_lbl = "Sin enriquecimiento"
             msg += f"  \n**Datos:** {datos_lbl}"
         st.info(f"Pipeline en ejecucion  \n{msg}")
-        if st.button("Detener cruce", type="primary", use_container_width=True, key="_stop_sidebar"):
+        if st.button("Detener cruce", type="primary", width="stretch", key="_stop_sidebar"):
             _kill_pipeline()
             st.rerun(scope="app")
         st.number_input("Horas", value=10, disabled=True, key="_dlimit")
@@ -789,16 +853,16 @@ with st.sidebar:
             key="sidebar_hours",
             help="Solo aplica al boton 'Consulta personalizada'.",
         )
-        if st.button("Consulta personalizada", use_container_width=True, key="btn_custom"):
+        if st.button("Consulta personalizada", width="stretch", key="btn_custom"):
             st.session_state.confirm_mode  = "custom"
             st.session_state.confirm_hours = int(st.session_state.sidebar_hours)
-        if st.button("Ultimas 10 horas", use_container_width=True, key="btn_10h"):
+        if st.button("Ultimas 10 horas", width="stretch", key="btn_10h"):
             st.session_state.confirm_mode  = "10h"
             st.session_state.confirm_limit = 0
-        if st.button("Ultimas 24 horas", use_container_width=True, key="btn_24h"):
+        if st.button("Ultimas 24 horas", width="stretch", key="btn_24h"):
             st.session_state.confirm_mode  = "24h"
             st.session_state.confirm_limit = 0
-        if st.button("Consulta general", use_container_width=True, key="btn_all"):
+        if st.button("Consulta general", width="stretch", key="btn_all"):
             st.session_state.confirm_mode  = "all"
             st.session_state.confirm_limit = 0
 
@@ -839,24 +903,31 @@ with st.sidebar:
             if show_gpon and show_hfc:
                 col_a, col_p = st.columns(2)
                 with col_a:
-                    if st.button("GPON\n(Axtract)", use_container_width=True, key="btn_enrich_axtract"):
+                    if st.button("GPON\n(Axtract)", width="stretch", key="btn_enrich_axtract"):
                         st.session_state["enrich_mode"] = "axtract"
                         st.session_state["enrich_file"] = _target_excel
                 with col_p:
-                    if st.button("HFC\n(PNM)", use_container_width=True, key="btn_enrich_pnm"):
+                    if st.button("HFC\n(PNM)", width="stretch", key="btn_enrich_pnm"):
                         st.session_state["enrich_mode"] = "pnm"
                         st.session_state["enrich_file"] = _target_excel
             elif show_gpon:
-                if st.button("Enriquecer GPON (Axtract)", use_container_width=True, key="btn_enrich_axtract"):
+                if st.button("Enriquecer GPON (Axtract)", width="stretch", key="btn_enrich_axtract"):
                     st.session_state["enrich_mode"] = "axtract"
                     st.session_state["enrich_file"] = _target_excel
             else:
-                if st.button("Enriquecer HFC (PNM)", use_container_width=True, key="btn_enrich_pnm"):
+                if st.button("Enriquecer HFC (PNM)", width="stretch", key="btn_enrich_pnm"):
                     st.session_state["enrich_mode"] = "pnm"
                     st.session_state["enrich_file"] = _target_excel
 
+    if _logged_user in _STATS_USERS:
+        st.divider()
+        _stats_lbl = "Cerrar estadísticas" if st.session_state.get("show_stats") else "Panel de estadísticas"
+        if st.button(_stats_lbl, width="stretch", key="btn_stats"):
+            st.session_state["show_stats"] = not st.session_state.get("show_stats", False)
+            st.rerun()
+
     st.divider()
-    if st.button("Cerrar sesion", use_container_width=True, key="btn_logout"):
+    if st.button("Cerrar sesion", width="stretch", key="btn_logout"):
         st.session_state.clear()
         st.rerun()
 
@@ -974,6 +1045,10 @@ else:
                 "Verificando disponibilidad cada 5 segundos..."
             )
         _waiting_area()
+
+    if st.session_state.get("show_stats") and st.session_state.get("username") in _STATS_USERS:
+        _stats_page()
+        st.stop()
 
     if sheets is None:
         st.title("Crucesmacros")
